@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0d1b2a"/>
+      <stop offset="100%" style="stop-color:#1b2838"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="0" fill="url(#bg3)"/>
+  <!-- Connection lines -->
+  <line x1="256" y1="180" x2="150" y2="280" stroke="#4da6ff" stroke-width="3" opacity="0.5"/>
+  <line x1="256" y1="180" x2="362" y2="280" stroke="#4da6ff" stroke-width="3" opacity="0.5"/>
+  <line x1="256" y1="180" x2="256" y2="300" stroke="#4da6ff" stroke-width="3" opacity="0.5"/>
+  <line x1="150" y1="280" x2="100" y2="380" stroke="#4da6ff" stroke-width="3" opacity="0.5"/>
+  <line x1="150" y1="280" x2="200" y2="380" stroke="#4da6ff" stroke-width="3" opacity="0.5"/>
+  <line x1="362" y1="280" x2="312" y2="380" stroke="#4da6ff" stroke-width="3" opacity="0.5"/>
+  <line x1="362" y1="280" x2="412" y2="380" stroke="#4da6ff" stroke-width="3" opacity="0.5"/>
+  <!-- Center magnifying glass -->
+  <circle cx="256" cy="150" r="55" fill="none" stroke="#4da6ff" stroke-width="6"/>
+  <line x1="295" y1="189" x2="320" y2="214" stroke="#4da6ff" stroke-width="8" stroke-linecap="round"/>
+  <!-- HTTP method badges -->
+  <rect x="120" y="265" width="60" height="28" rx="6" fill="#51cf66"/>
+  <rect x="226" y="285" width="60" height="28" rx="6" fill="#4da6ff"/>
+  <rect x="332" y="265" width="60" height="28" rx="6" fill="#ff6b6b"/>
+  <!-- Leaf nodes -->
+  <circle cx="100" cy="385" r="14" fill="#51cf66" opacity="0.7"/>
+  <circle cx="200" cy="385" r="14" fill="#51cf66" opacity="0.7"/>
+  <circle cx="312" cy="385" r="14" fill="#ff6b6b" opacity="0.7"/>
+  <circle cx="412" cy="385" r="14" fill="#ff6b6b" opacity="0.7"/>
+</svg>

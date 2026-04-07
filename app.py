@@ -23,6 +23,7 @@ from typing import Dict, Optional
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # Import pipeline modules
@@ -57,6 +58,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="API Doc Crawler", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 
 # ---------------------------------------------------------------------------
