@@ -1,4 +1,4 @@
-run = "python app.py"
+run = "pip install -q -r requirements.txt && python app.py"
 entrypoint = "app.py"
 modules = ["python-3.12"]
 
@@ -6,7 +6,7 @@ modules = ["python-3.12"]
 channel = "stable-24_05"
 
 [deployment]
-run = ["sh", "-c", "python app.py"]
+run = ["sh", "-c", "pip install -q -r requirements.txt && python app.py"]
 
 [[ports]]
 localPort = 5000
