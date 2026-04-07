@@ -41,7 +41,7 @@ The app includes example APIs you can test with immediately:
 | **GitHub** | `https://docs.github.com/en/rest` | Sidebar-navigated docs |
 | **Spotify** | `https://developer.spotify.com/documentation/web-api` | Sidebar-navigated docs |
 | **Stripe** | `https://stripe.com/docs/api` | Sidebar-navigated docs |
-| **OpenAI** | `https://docs.openai.com/api-reference` | Sidebar-navigated docs |
+| **OpenAI** | `https://developers.openai.com/api/reference/` | Sidebar-navigated docs |
 
 ---
 

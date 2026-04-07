@@ -18,6 +18,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -36,7 +37,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 # Job storage (in-memory)
 # ---------------------------------------------------------------------------
 
-jobs: dict[str, dict] = {}
+jobs: dict = {}
 JOBS_DIR = Path("jobs")
 
 
@@ -64,8 +65,8 @@ app = FastAPI(title="API Doc Crawler", lifespan=lifespan)
 
 class CrawlRequest(BaseModel):
     url: str
-    password: str | None = None
-    collection_name: str | None = None
+    password: Optional[str] = None
+    collection_name: Optional[str] = None
     max_endpoints: int = 500
     delay: float = 0.5
 
@@ -75,7 +76,7 @@ class JobStatus(BaseModel):
     status: str  # queued, downloading, categorizing, generating, completed, failed
     progress: str
     endpoint_count: int = 0
-    error: str | None = None
+    error: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

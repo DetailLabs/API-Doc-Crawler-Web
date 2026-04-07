@@ -284,6 +284,18 @@ def resolve_schema(schema, definitions):
     return props
 
 
+def _same_site(host1, host2):
+    """Check if two hostnames belong to the same site (allowing subdomains)."""
+    if host1 == host2:
+        return True
+    # Extract root domain (last two parts): docs.stripe.com -> stripe.com
+    parts1 = (host1 or "").split(".")
+    parts2 = (host2 or "").split(".")
+    root1 = ".".join(parts1[-2:]) if len(parts1) >= 2 else host1
+    root2 = ".".join(parts2[-2:]) if len(parts2) >= 2 else host2
+    return root1 == root2
+
+
 def discover_sidebar(client, start_url):
     """Extract endpoint links from sidebar navigation using BeautifulSoup."""
     try:
@@ -321,8 +333,8 @@ def discover_sidebar(client, start_url):
                 full_url = urljoin(start_url, href)
                 parsed = urlparse(full_url)
 
-                # Same host only
-                if parsed.hostname != base_host:
+                # Same site only (allow subdomains like docs.stripe.com for stripe.com)
+                if not _same_site(parsed.hostname, base_host):
                     continue
                 # Skip static assets
                 if re.search(r"\.(png|jpg|gif|css|js|svg|ico|woff)$", full_url, re.I):
@@ -392,26 +404,41 @@ def extract_page(client, url):
     h1 = soup.find("h1")
     result["title"] = h1.get_text(strip=True) if h1 else (soup.title.get_text(strip=True) if soup.title else "")
 
-    # Method + path from badges/content
-    method_el = soup.find(class_=re.compile(r"method|verb|badge", re.I))
-    if method_el:
-        t = method_el.get_text(strip=True).upper()
-        if t in ("GET", "POST", "PUT", "PATCH", "DELETE"):
-            result["method"] = t
+    # Method + path extraction — try multiple strategies
 
-    # Find method+path pattern in text
+    # Strategy 1: Find spans/elements containing HTTP method text, then grab path from parent
+    for span in soup.find_all("span"):
+        t = span.get_text(strip=True).upper()
+        if t in ("GET", "POST", "PUT", "PATCH", "DELETE") and span.parent:
+            full = span.parent.get_text(strip=True)
+            m = re.search(r"(GET|POST|PUT|PATCH|DELETE)\s*(/v\d+/[\w/:.\-{}]+)", full)
+            if m:
+                result["method"] = m.group(1)
+                result["api_path"] = m.group(2)
+                break
+
+    # Strategy 2: Badge/method class elements
+    if not result["method"]:
+        method_el = soup.find(class_=re.compile(r"method|verb|badge", re.I))
+        if method_el:
+            t = method_el.get_text(strip=True).upper()
+            if t in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+                result["method"] = t
+
+    # Get article text for further extraction
     article = soup.find("article") or soup.find("main") or soup.find(class_=re.compile(r"content", re.I)) or soup.body
     if article:
         article_text = article.get_text(separator="\n", strip=True)
         result["text"] = article_text
 
+        # Strategy 3: Method+path pattern in text (with space)
         if not result["method"]:
             m = re.search(r"\b(GET|POST|PUT|PATCH|DELETE)\s+(/[\w/{}\.:=-]+)", article_text)
             if m:
                 result["method"] = m.group(1)
                 result["api_path"] = m.group(2)
 
-    # Find API path
+    # Strategy 4: Find API path from specific elements
     if not result["api_path"]:
         path_el = soup.find(class_=re.compile(r"url|path|endpoint", re.I))
         if not path_el:
