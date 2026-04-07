@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Doc Crawler</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 48px 24px;
+        }
+
+        h1 {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: #f8fafc;
+        }
+
+        .subtitle {
+            color: #94a3b8;
+            margin-bottom: 40px;
+            font-size: 15px;
+        }
+
+        /* Form */
+        .form-card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 28px;
+            margin-bottom: 24px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group:last-child {
+            margin-bottom: 0;
+        }
+
+        label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: #94a3b8;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        input[type="text"], input[type="url"], input[type="password"], input[type="number"] {
+            width: 100%;
+            padding: 10px 14px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            color: #e2e8f0;
+            font-size: 15px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        input:focus {
+            border-color: #3b82f6;
+        }
+
+        input::placeholder {
+            color: #475569;
+        }
+
+        .row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .toggle-link {
+            background: none;
+            border: none;
+            color: #3b82f6;
+            font-size: 13px;
+            cursor: pointer;
+            padding: 0;
+        }
+
+        .toggle-link:hover {
+            text-decoration: underline;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        /* Button */
+        .btn {
+            width: 100%;
+            padding: 12px 24px;
+            background: #3b82f6;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .btn:hover {
+            background: #2563eb;
+        }
+
+        .btn:disabled {
+            background: #334155;
+            color: #64748b;
+            cursor: not-allowed;
+        }
+
+        /* Progress */
+        .progress-card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 28px;
+            margin-bottom: 24px;
+        }
+
+        .status-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2.5px solid #334155;
+            border-top-color: #3b82f6;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .status-label {
+            font-weight: 600;
+            font-size: 15px;
+        }
+
+        .status-label.completed { color: #22c55e; }
+        .status-label.failed { color: #ef4444; }
+
+        .progress-text {
+            color: #94a3b8;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .progress-bar-track {
+            width: 100%;
+            height: 4px;
+            background: #334155;
+            border-radius: 2px;
+            margin-top: 16px;
+            overflow: hidden;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: #3b82f6;
+            border-radius: 2px;
+            transition: width 0.3s;
+        }
+
+        .progress-bar-fill.indeterminate {
+            width: 30%;
+            animation: indeterminate 1.5s ease-in-out infinite;
+        }
+
+        @keyframes indeterminate {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(400%); }
+        }
+
+        /* Results */
+        .result-card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 28px;
+        }
+
+        .result-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+
+        .result-header h2 {
+            font-size: 18px;
+            color: #f8fafc;
+        }
+
+        .badge {
+            font-size: 12px;
+            font-weight: 600;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: #14532d;
+            color: #22c55e;
+        }
+
+        .download-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            background: #22c55e;
+            color: #052e16;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            text-decoration: none;
+        }
+
+        .download-btn:hover {
+            background: #16a34a;
+        }
+
+        .endpoint-preview {
+            margin-top: 20px;
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid #334155;
+            border-radius: 8px;
+        }
+
+        .endpoint-preview table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .endpoint-preview th {
+            text-align: left;
+            padding: 10px 14px;
+            background: #0f172a;
+            color: #94a3b8;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 11px;
+            letter-spacing: 0.5px;
+            position: sticky;
+            top: 0;
+        }
+
+        .endpoint-preview td {
+            padding: 8px 14px;
+            border-top: 1px solid #1e293b;
+            color: #cbd5e1;
+        }
+
+        .method {
+            font-weight: 700;
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            display: inline-block;
+            min-width: 52px;
+            text-align: center;
+        }
+
+        .method.GET { background: #1e3a5f; color: #60a5fa; }
+        .method.POST { background: #14532d; color: #4ade80; }
+        .method.PUT { background: #422006; color: #fbbf24; }
+        .method.PATCH { background: #431407; color: #fb923c; }
+        .method.DELETE { background: #450a0a; color: #f87171; }
+
+        .category-tag {
+            font-size: 11px;
+            color: #64748b;
+        }
+
+        .error-msg {
+            color: #ef4444;
+            background: #450a0a;
+            border: 1px solid #7f1d1d;
+            border-radius: 8px;
+            padding: 14px 18px;
+            font-size: 14px;
+            margin-top: 12px;
+        }
+
+        .new-crawl-btn {
+            background: none;
+            border: 1px solid #334155;
+            color: #94a3b8;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            cursor: pointer;
+            margin-top: 16px;
+        }
+
+        .new-crawl-btn:hover {
+            border-color: #475569;
+            color: #e2e8f0;
+        }
+
+        /* Example URLs */
+        .examples {
+            margin-top: 16px;
+        }
+
+        .examples-label {
+            font-size: 12px;
+            color: #64748b;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+
+        .example-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .example-chip {
+            background: #0f172a;
+            border: 1px solid #334155;
+            color: #94a3b8;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+        }
+
+        .example-chip:hover {
+            border-color: #3b82f6;
+            color: #e2e8f0;
+            background: #1e293b;
+        }
+
+        .example-chip .chip-name {
+            color: #e2e8f0;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>API Doc Crawler</h1>
+        <p class="subtitle">Paste a documentation URL and get a ready-to-import Postman collection.</p>
+
+        <!-- Form -->
+        <div id="form-section">
+            <div class="form-card">
+                <div class="form-group">
+                    <label for="url">Documentation URL</label>
+                    <input type="url" id="url" placeholder="https://developers.example.com/reference" required>
+                </div>
+
+                <div class="toggle-row">
+                    <button class="toggle-link" onclick="toggleAdvanced()">Advanced options</button>
+                </div>
+
+                <div id="advanced" class="hidden">
+                    <div class="form-group" style="margin-top: 16px">
+                        <label for="password">Password (for gated docs)</label>
+                        <input type="password" id="password" placeholder="Optional">
+                    </div>
+                    <div class="row">
+                        <div class="form-group">
+                            <label for="collection_name">Collection name</label>
+                            <input type="text" id="collection_name" placeholder="Auto-detected">
+                        </div>
+                        <div class="form-group">
+                            <label for="max_endpoints">Max endpoints</label>
+                            <input type="number" id="max_endpoints" value="500" min="1" max="2000">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group" style="margin-top: 20px">
+                    <button class="btn" id="crawl-btn" onclick="startCrawl()">Generate Postman Collection</button>
+                </div>
+            </div>
+
+            <div class="examples">
+                <p class="examples-label">Try with a public API</p>
+                <div class="example-chips">
+                    <button class="example-chip" onclick="fillUrl('https://petstore.swagger.io')">
+                        <span class="chip-name">Petstore</span> &mdash; Swagger demo
+                    </button>
+                    <button class="example-chip" onclick="fillUrl('https://docs.github.com/en/rest')">
+                        <span class="chip-name">GitHub</span> &mdash; REST API
+                    </button>
+                    <button class="example-chip" onclick="fillUrl('https://developer.spotify.com/documentation/web-api')">
+                        <span class="chip-name">Spotify</span> &mdash; Web API
+                    </button>
+                    <button class="example-chip" onclick="fillUrl('https://stripe.com/docs/api')">
+                        <span class="chip-name">Stripe</span> &mdash; Payments API
+                    </button>
+                    <button class="example-chip" onclick="fillUrl('https://docs.openai.com/api-reference')">
+                        <span class="chip-name">OpenAI</span> &mdash; API Reference
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Progress -->
+        <div id="progress-section" class="hidden">
+            <div class="progress-card">
+                <div class="status-row">
+                    <div class="spinner" id="spinner"></div>
+                    <span class="status-label" id="status-label">Starting...</span>
+                </div>
+                <p class="progress-text" id="progress-text">Queued</p>
+                <div class="progress-bar-track">
+                    <div class="progress-bar-fill indeterminate" id="progress-bar"></div>
+                </div>
+                <div id="error-container"></div>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div id="result-section" class="hidden">
+            <div class="result-card">
+                <div class="result-header">
+                    <h2>Collection Ready</h2>
+                    <span class="badge" id="result-badge">0 endpoints</span>
+                </div>
+                <a class="download-btn" id="download-btn" href="#">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <path d="M8 1v10M8 11L4 7M8 11l4-4M2 14h12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    Download Postman Collection
+                </a>
+                <div class="endpoint-preview" id="endpoint-preview"></div>
+                <button class="new-crawl-btn" onclick="resetForm()">Crawl another API</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentJobId = null;
+        let pollInterval = null;
+
+        function toggleAdvanced() {
+            document.getElementById('advanced').classList.toggle('hidden');
+        }
+
+        function fillUrl(url) {
+            document.getElementById('url').value = url;
+            document.getElementById('url').focus();
+        }
+
+        async function startCrawl() {
+            const url = document.getElementById('url').value.trim();
+            if (!url) return;
+
+            const body = {
+                url: url,
+                password: document.getElementById('password').value || null,
+                collection_name: document.getElementById('collection_name').value || null,
+                max_endpoints: parseInt(document.getElementById('max_endpoints').value) || 500,
+            };
+
+            document.getElementById('crawl-btn').disabled = true;
+            document.getElementById('form-section').classList.add('hidden');
+            document.getElementById('progress-section').classList.remove('hidden');
+            document.getElementById('result-section').classList.add('hidden');
+            document.getElementById('error-container').innerHTML = '';
+            document.getElementById('spinner').style.display = '';
+
+            try {
+                const resp = await fetch('/api/crawl', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await resp.json();
+                currentJobId = data.job_id;
+                pollInterval = setInterval(pollJob, 1500);
+            } catch (e) {
+                showError('Failed to start crawl: ' + e.message);
+            }
+        }
+
+        async function pollJob() {
+            if (!currentJobId) return;
+            try {
+                const resp = await fetch(`/api/jobs/${currentJobId}`);
+                const job = await resp.json();
+
+                const statusNames = {
+                    queued: 'Queued',
+                    downloading: 'Discovering & Scraping',
+                    categorizing: 'Categorizing',
+                    generating: 'Generating Collection',
+                    completed: 'Completed',
+                    failed: 'Failed',
+                };
+
+                document.getElementById('status-label').textContent = statusNames[job.status] || job.status;
+                document.getElementById('progress-text').textContent = job.progress;
+
+                // Update progress bar
+                const bar = document.getElementById('progress-bar');
+                const steps = { queued: 5, downloading: 30, categorizing: 70, generating: 90, completed: 100, failed: 100 };
+                const pct = steps[job.status] || 0;
+                bar.style.width = pct + '%';
+                bar.classList.remove('indeterminate');
+
+                if (job.status === 'completed') {
+                    clearInterval(pollInterval);
+                    document.getElementById('spinner').style.display = 'none';
+                    document.getElementById('status-label').classList.add('completed');
+                    showResults(job);
+                } else if (job.status === 'failed') {
+                    clearInterval(pollInterval);
+                    document.getElementById('spinner').style.display = 'none';
+                    document.getElementById('status-label').classList.add('failed');
+                    showError(job.error || 'Unknown error');
+                }
+            } catch (e) {
+                // Network blip, keep polling
+            }
+        }
+
+        async function showResults(job) {
+            document.getElementById('result-section').classList.remove('hidden');
+            document.getElementById('result-badge').textContent = job.endpoint_count + ' endpoints';
+            document.getElementById('download-btn').href = `/api/jobs/${currentJobId}/download`;
+
+            // Load endpoint preview
+            try {
+                const resp = await fetch(`/api/jobs/${currentJobId}/endpoints`);
+                const endpoints = await resp.json();
+                renderPreview(endpoints);
+            } catch (e) {
+                // Preview is optional
+            }
+        }
+
+        function renderPreview(endpoints) {
+            const container = document.getElementById('endpoint-preview');
+            if (!endpoints.length) {
+                container.innerHTML = '';
+                return;
+            }
+
+            let html = '<table><thead><tr><th>Method</th><th>Path</th><th>Category</th></tr></thead><tbody>';
+            for (const ep of endpoints.slice(0, 200)) {
+                const method = (ep.method || 'GET').toUpperCase();
+                const path = ep.api_path || ep.slug || '\u2014';
+                const cat = ep.category || '\u2014';
+                html += `<tr>
+                    <td><span class="method ${method}">${method}</span></td>
+                    <td>${escapeHtml(path)}</td>
+                    <td class="category-tag">${escapeHtml(cat)}</td>
+                </tr>`;
+            }
+            if (endpoints.length > 200) {
+                html += `<tr><td colspan="3" style="text-align:center; color:#64748b;">...and ${endpoints.length - 200} more</td></tr>`;
+            }
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+
+        function showError(msg) {
+            document.getElementById('error-container').innerHTML =
+                `<div class="error-msg">${escapeHtml(msg)}</div>
+                 <button class="new-crawl-btn" onclick="resetForm()">Try again</button>`;
+        }
+
+        function resetForm() {
+            currentJobId = null;
+            if (pollInterval) clearInterval(pollInterval);
+            document.getElementById('form-section').classList.remove('hidden');
+            document.getElementById('progress-section').classList.add('hidden');
+            document.getElementById('result-section').classList.add('hidden');
+            document.getElementById('crawl-btn').disabled = false;
+            document.getElementById('status-label').className = 'status-label';
+            document.getElementById('error-container').innerHTML = '';
+            document.getElementById('progress-bar').className = 'progress-bar-fill indeterminate';
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Submit on Enter in URL field
+        document.getElementById('url').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') startCrawl();
+        });
+    </script>
+</body>
+</html>
