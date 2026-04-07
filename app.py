@@ -18,7 +18,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -37,7 +37,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 # Job storage (in-memory)
 # ---------------------------------------------------------------------------
 
-jobs: dict = {}
+jobs: Dict[str, dict] = {}
 JOBS_DIR = Path("jobs")
 
 

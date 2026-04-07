@@ -5,9 +5,12 @@ modules = ["python-3.12"]
 [nix]
 channel = "stable-24_05"
 
+[env]
+PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
+
 [deployment]
 run = ["sh", "-c", "python app.py"]
-build = ["sh", "-c", "pip install -r requirements.txt"]
+build = ["sh", "-c", "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 pip install -r requirements.txt"]
 
 [[ports]]
 localPort = 5000
