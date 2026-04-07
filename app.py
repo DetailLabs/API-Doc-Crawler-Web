@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-API Doc Crawler — Web Edition
+API Doc Crawler — Web Edition (No Browser Required)
 
 Usage:
-    pip install -r requirements.txt && playwright install chromium
+    pip install -r requirements.txt
     python app.py
 
 Then open http://localhost:5000
@@ -14,13 +14,12 @@ import json
 import logging
 import os
 import re
-import shutil
-import subprocess
 import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
@@ -32,43 +31,6 @@ from scripts import postman_module as step3
 
 logger = logging.getLogger("webapp")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
-
-# ---------------------------------------------------------------------------
-# Chromium detection
-# ---------------------------------------------------------------------------
-
-def find_chromium():
-    """Find a usable Chromium binary, handling Nix and system installs."""
-    # 1. Explicit env var (set in replit.nix)
-    env_path = os.environ.get("CHROMIUM_PATH")
-    if env_path and os.path.isfile(env_path):
-        return env_path
-
-    # 2. Nix playwright-driver browsers directory
-    browsers_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
-    if browsers_path:
-        for root, dirs, files in os.walk(browsers_path):
-            for name in ("chromium", "chrome", "headless_shell"):
-                if name in files:
-                    candidate = os.path.join(root, name)
-                    if os.access(candidate, os.X_OK):
-                        return candidate
-
-    # 3. System PATH
-    for name in ("chromium", "chromium-browser", "google-chrome", "chrome"):
-        path = shutil.which(name)
-        if path:
-            return path
-
-    # 4. Fallback: let Playwright manage its own
-    return None
-
-
-CHROMIUM_PATH = find_chromium()
-if CHROMIUM_PATH:
-    logger.info(f"Using Chromium at: {CHROMIUM_PATH}")
-else:
-    logger.info("No system Chromium found — Playwright will use its bundled browser")
 
 # ---------------------------------------------------------------------------
 # Job storage (in-memory)
@@ -89,16 +51,7 @@ def get_job_dir(job_id: str) -> Path:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     JOBS_DIR.mkdir(exist_ok=True)
-    # Install Playwright browsers if not using system Chromium
-    if not CHROMIUM_PATH and not os.environ.get("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD"):
-        try:
-            subprocess.run(
-                ["playwright", "install", "chromium"],
-                check=True, capture_output=True, text=True, timeout=120,
-            )
-            logger.info("Playwright Chromium installed successfully")
-        except Exception as e:
-            logger.warning(f"Could not install Playwright browsers: {e}")
+    logger.info("API Doc Crawler ready (no browser required)")
     yield
 
 
@@ -114,7 +67,7 @@ class CrawlRequest(BaseModel):
     password: str | None = None
     collection_name: str | None = None
     max_endpoints: int = 500
-    delay: float = 1.5
+    delay: float = 0.5
 
 
 class JobStatus(BaseModel):
@@ -140,55 +93,28 @@ def run_pipeline(job_id: str, req: CrawlRequest):
     try:
         # --- Step 1: Download ---
         job["status"] = "downloading"
-        job["progress"] = "Launching browser and discovering endpoints..."
+        job["progress"] = "Discovering endpoints..."
 
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as p:
-            launch_args = {
-                "headless": True,
-                "args": [
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--single-process",
-                ],
-            }
-            if CHROMIUM_PATH:
-                launch_args["executable_path"] = CHROMIUM_PATH
-
-            browser = p.chromium.launch(**launch_args)
-            ctx = browser.new_context(
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                           "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-            )
-            page = ctx.new_page()
-
-            # Navigate
-            job["progress"] = f"Navigating to {req.url}"
-            try:
-                page.goto(req.url, wait_until="networkidle", timeout=30000)
-            except Exception as e:
-                logger.warning(f"Slow navigation: {e}")
-            time.sleep(2)
+        with httpx.Client(
+            headers=step1.DEFAULT_HEADERS,
+            timeout=30,
+            follow_redirects=True,
+        ) as client:
 
             # Auth
             if req.password:
                 job["progress"] = "Authenticating..."
-                if not step1.authenticate(page, req.password):
+                if not step1.authenticate(client, req.url, req.password):
                     job["status"] = "failed"
                     job["error"] = "Authentication failed — check password"
-                    browser.close()
                     return
 
             # Discover
             job["progress"] = "Discovering endpoints..."
-            endpoints = step1.discover_endpoints(page, req.url)
+            endpoints = step1.discover_endpoints(client, req.url)
             if not endpoints:
                 job["status"] = "failed"
                 job["error"] = "No endpoints found at this URL"
-                browser.close()
                 return
 
             # Split OpenAPI vs scrape
@@ -197,14 +123,16 @@ def run_pipeline(job_id: str, req: CrawlRequest):
 
             all_data = list(openapi_eps)
             job["endpoint_count"] = len(openapi_eps)
-            job["progress"] = f"Found {len(openapi_eps)} OpenAPI endpoints, scraping {len(scrape_eps)} pages..."
+            job["progress"] = "Found {} OpenAPI endpoints, scraping {} pages...".format(
+                len(openapi_eps), len(scrape_eps)
+            )
 
             for i, ep in enumerate(scrape_eps[:req.max_endpoints], 1):
-                slug = ep.get("slug", f"endpoint_{i}")
-                job["progress"] = f"Scraping page {i}/{len(scrape_eps)}: {slug}"
+                slug = ep.get("slug", "endpoint_{}".format(i))
+                job["progress"] = "Scraping page {}/{}: {}".format(i, len(scrape_eps), slug)
 
                 try:
-                    data = step1.extract_page(page, ep["url"])
+                    data = step1.extract_page(client, ep["url"])
                     merged = {**ep}
                     for key in ("title", "method", "api_path"):
                         if data.get(key):
@@ -217,13 +145,6 @@ def run_pipeline(job_id: str, req: CrawlRequest):
                     merged["response_example"] = data.get("response_example", "")
                     merged["headers"] = data.get("headers", [])
 
-                    if not merged.get("text", "").strip():
-                        time.sleep(3)
-                        data = step1.extract_page(page, ep["url"])
-                        merged["text"] = data.get("text", "")
-                        merged["description_body"] = data.get("description_body", "")
-                        merged["parameters"] = data.get("parameters", [])
-
                     all_data.append(merged)
                     job["endpoint_count"] = len(all_data)
                 except Exception as e:
@@ -231,15 +152,13 @@ def run_pipeline(job_id: str, req: CrawlRequest):
 
                 time.sleep(req.delay)
 
-            browser.close()
-
         # Save individual endpoint files
         endpoints_dir = os.path.join(output_dir, "endpoints")
         os.makedirs(endpoints_dir, exist_ok=True)
         for i, ep in enumerate(all_data, 1):
-            slug = re.sub(r"[^a-zA-Z0-9_\-]", "_", ep.get("slug", f"endpoint_{i}"))
+            slug = re.sub(r"[^a-zA-Z0-9_\-]", "_", ep.get("slug", "endpoint_{}".format(i)))
             method = (ep.get("method") or "UNKNOWN").upper()
-            filename = f"{method}_{slug}.json"
+            filename = "{}_{}.json".format(method, slug)
             with open(os.path.join(endpoints_dir, filename), "w") as f:
                 json.dump(ep, f, indent=2, ensure_ascii=False)
 
@@ -262,7 +181,7 @@ def run_pipeline(job_id: str, req: CrawlRequest):
             json.dump(endpoints_list, f, indent=2, ensure_ascii=False)
 
         job["endpoint_count"] = len(endpoints_list)
-        job["progress"] = f"Categorized {len(endpoints_list)} endpoints"
+        job["progress"] = "Categorized {} endpoints".format(len(endpoints_list))
 
         # --- Step 3: Postman collection ---
         job["status"] = "generating"
@@ -299,7 +218,7 @@ def run_pipeline(job_id: str, req: CrawlRequest):
 
         total = sum(len(f["item"]) for f in collection["item"])
         job["status"] = "completed"
-        job["progress"] = f"Done! {total} requests in {len(collection['item'])} folders"
+        job["progress"] = "Done! {} requests in {} folders".format(total, len(collection["item"]))
         job["collection_path"] = out_path
         job["endpoints_path"] = ep_path
 

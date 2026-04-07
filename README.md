@@ -2,7 +2,7 @@
 
 Paste any API documentation URL and get a ready-to-import Postman Collection. No install, no CLI — just a browser.
 
-Built with [FastAPI](https://fastapi.tiangolo.com/) and [Playwright](https://playwright.dev/python/). Handles JavaScript-rendered docs, password-gated sites, OpenAPI/Swagger specs, and sidebar-navigated platforms like ReadMe, GitBook, Docusaurus, and Redocly.
+Built with [FastAPI](https://fastapi.tiangolo.com/), [httpx](https://www.python-httpx.org/), and [BeautifulSoup](https://www.crummy.com/software/BeautifulSoup/). No browser or Chromium required. Handles password-gated sites, OpenAPI/Swagger specs, and sidebar-navigated platforms like ReadMe, GitBook, Docusaurus, and Redocly.
 
 ---
 
@@ -20,7 +20,6 @@ Built with [FastAPI](https://fastapi.tiangolo.com/) and [Playwright](https://pla
 
 ```bash
 pip install -r requirements.txt
-playwright install --with-deps chromium
 python app.py
 ```
 
@@ -104,7 +103,7 @@ A Postman Collection v2.1 JSON file with:
 URL Input
    │
    ▼
-Step 1: Discovery & Scraping (Playwright)
+Step 1: Discovery & Scraping (httpx + BeautifulSoup)
    │  ├─ OpenAPI/Swagger spec parsing
    │  └─ Sidebar navigation + per-page extraction
    ▼
