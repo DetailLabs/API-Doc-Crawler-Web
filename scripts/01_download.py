@@ -2,8 +2,11 @@
 """
 Step 1: Download all API endpoints from a documentation site.
 
+Uses httpx + BeautifulSoup instead of a browser. Optimized for OpenAPI/Swagger
+specs and ReadMe-style documentation sites.
+
 Usage:
-    python3 scripts/01_download.py https://developers.example.com/reference -p "password" -o output
+    python3 scripts/01_download.py https://developers.example.com/reference -o output
     python3 scripts/01_download.py https://petstore.swagger.io -o output
 
 Output:
@@ -14,80 +17,87 @@ import argparse
 import json
 import os
 import re
-import time
 import logging
 from urllib.parse import urlparse, urljoin
+
+import httpx
+from bs4 import BeautifulSoup, Tag
 
 logger = logging.getLogger("downloader")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
+}
+
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
 
-PASSWORD_SELECTORS = [
-    'input[type="password"]', 'input[name="password"]',
-    'input[placeholder*="assword"]', 'input[type="text"][name*="pass"]',
-]
-SUBMIT_SELECTORS = [
-    'button[type="submit"]', 'input[type="submit"]',
-    'button:has-text("Submit")', 'button:has-text("Enter")',
-]
+def authenticate(client, url, password):
+    """Attempt password authentication by POSTing to the page."""
+    logger.info("Attempting password authentication...")
+    try:
+        resp = client.get(url, follow_redirects=True)
+        soup = BeautifulSoup(resp.text, "html.parser")
 
+        # Find a form with a password field
+        password_input = soup.find("input", attrs={"type": "password"})
+        if not password_input:
+            password_input = soup.find("input", attrs={"name": re.compile(r"pass", re.I)})
 
-def authenticate(page, password):
-    url_lower = page.url.lower()
-    has_gate = "password" in url_lower or any(page.query_selector(s) for s in PASSWORD_SELECTORS[:2])
-    if not has_gate:
-        logger.info("No password gate detected")
-        return True
+        if not password_input:
+            logger.info("No password gate detected")
+            return True
 
-    logger.info("Password gate detected, authenticating...")
-    for sel in PASSWORD_SELECTORS:
-        try:
-            el = page.query_selector(sel)
-            if el and el.is_visible():
-                el.fill(password)
-                break
-        except Exception:
-            continue
+        # Find the form
+        form = password_input.find_parent("form")
+        action = url
+        method = "POST"
+        form_data = {}
 
-    for sel in SUBMIT_SELECTORS:
-        try:
-            btn = page.query_selector(sel)
-            if btn and btn.is_visible():
-                btn.click()
-                break
-        except Exception:
-            continue
-    else:
-        page.keyboard.press("Enter")
+        if form:
+            action = urljoin(url, form.get("action", ""))
+            method = (form.get("method", "POST")).upper()
+            # Collect all hidden inputs
+            for inp in form.find_all("input"):
+                name = inp.get("name")
+                if name:
+                    if inp.get("type") == "password":
+                        form_data[name] = password
+                    else:
+                        form_data[name] = inp.get("value", "")
+        else:
+            form_data["password"] = password
 
-    page.wait_for_load_state("networkidle")
-    time.sleep(3)
-    if "password" in page.url.lower():
-        page.keyboard.press("Enter")
-        page.wait_for_load_state("networkidle")
-        time.sleep(2)
+        if method == "POST":
+            resp = client.post(action, data=form_data, follow_redirects=True)
+        else:
+            form_data_str = "&".join(f"{k}={v}" for k, v in form_data.items())
+            resp = client.get(f"{action}?{form_data_str}", follow_redirects=True)
 
-    success = "password" not in page.url.lower()
-    logger.info("Auth " + ("succeeded" if success else "FAILED"))
-    return success
+        success = resp.status_code == 200 and "password" not in resp.url.path.lower()
+        logger.info("Auth " + ("succeeded" if success else "FAILED"))
+        return success
+    except Exception as e:
+        logger.error(f"Auth error: {e}")
+        return False
 
 
 # ---------------------------------------------------------------------------
 # Discovery
 # ---------------------------------------------------------------------------
 
-def discover_endpoints(page, start_url):
+def discover_endpoints(client, start_url):
     """Find all endpoint URLs via OpenAPI spec, sidebar nav, and content scan."""
     logger.info("Starting endpoint discovery...")
     all_eps = []
 
     # Strategy 1: OpenAPI spec
-    openapi = try_openapi(page, start_url)
+    openapi = try_openapi(client, start_url)
     if openapi:
         logger.info(f"Found {len(openapi)} endpoints via OpenAPI spec")
         all_eps.extend(openapi)
@@ -96,7 +106,7 @@ def discover_endpoints(page, start_url):
     if len(openapi) >= 3 and all(ep.get("api_path") and ep.get("method") for ep in openapi):
         logger.info("OpenAPI spec is complete, skipping sidebar/content scan")
     else:
-        sidebar = discover_sidebar(page, start_url)
+        sidebar = discover_sidebar(client, start_url)
         if sidebar:
             logger.info(f"Found {len(sidebar)} links via sidebar")
             all_eps.extend(sidebar)
@@ -106,7 +116,7 @@ def discover_endpoints(page, start_url):
     unique = []
     for ep in all_eps:
         if ep.get("source") == "openapi" and ep.get("api_path"):
-            key = f"{ep.get('method', '')}:{ep['api_path']}"
+            key = "{}:{}".format(ep.get("method", ""), ep["api_path"])
         else:
             key = ep["url"].rstrip("/")
         if key not in seen:
@@ -126,38 +136,35 @@ def discover_endpoints(page, start_url):
     return unique
 
 
-def try_openapi(page, start_url):
+def try_openapi(client, start_url):
     """Try to find and parse an OpenAPI/Swagger spec."""
     base = urlparse(start_url)
     candidates = [
-        f"{base.scheme}://{base.netloc}/openapi.json",
-        f"{base.scheme}://{base.netloc}/swagger.json",
-        f"{base.scheme}://{base.netloc}/v2/swagger.json",
-        f"{base.scheme}://{base.netloc}/v2/openapi.json",
-        f"{base.scheme}://{base.netloc}/api/openapi.json",
+        "{}://{}/openapi.json".format(base.scheme, base.netloc),
+        "{}://{}/swagger.json".format(base.scheme, base.netloc),
+        "{}://{}/v2/swagger.json".format(base.scheme, base.netloc),
+        "{}://{}/v2/openapi.json".format(base.scheme, base.netloc),
+        "{}://{}/api/openapi.json".format(base.scheme, base.netloc),
+        "{}://{}/v3/api-docs".format(base.scheme, base.netloc),
+        "{}://{}/api-docs".format(base.scheme, base.netloc),
     ]
 
     # Check page for spec links
     try:
-        links = page.evaluate("""() => {
-            const links = [];
-            document.querySelectorAll('a[href]').forEach(a => {
-                const h = a.getAttribute('href');
-                if (h && (h.includes('openapi') || h.includes('swagger'))
-                    && (h.endsWith('.json') || h.endsWith('.yaml')))
-                    links.push(h);
-            });
-            return links;
-        }""")
-        for link in links:
-            candidates.insert(0, urljoin(start_url, link))
+        resp = client.get(start_url, follow_redirects=True)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                if ("openapi" in href or "swagger" in href) and (href.endswith(".json") or href.endswith(".yaml")):
+                    candidates.insert(0, urljoin(start_url, href))
     except Exception:
         pass
 
     for url in candidates:
         try:
-            resp = page.request.get(url)
-            if not resp.ok:
+            resp = client.get(url, follow_redirects=True)
+            if resp.status_code != 200:
                 continue
             spec = resp.json()
             if "paths" not in spec:
@@ -179,7 +186,7 @@ def parse_openapi(spec, base_url):
     spec_base = base_url
     if "host" in spec:
         scheme = spec.get("schemes", ["https"])[0]
-        spec_base = f"{scheme}://{spec['host']}{spec.get('basePath', '')}"
+        spec_base = "{}://{}{}".format(scheme, spec["host"], spec.get("basePath", ""))
     elif spec.get("servers"):
         spec_base = spec["servers"][0].get("url", base_url)
 
@@ -193,7 +200,7 @@ def parse_openapi(spec, base_url):
             summary = details.get("summary", "") or ""
             description = details.get("description", "") or summary
             operation_id = details.get("operationId", "")
-            slug = operation_id or f"{method_upper}_{path}".replace("/", "_").strip("_")
+            slug = operation_id or "{}_{}".format(method_upper, path).replace("/", "_").strip("_")
 
             # Parameters
             parameters = []
@@ -216,6 +223,19 @@ def parse_openapi(spec, base_url):
                             "required": "", "description": info.get("description", ""), "in": "body",
                         })
 
+            # RequestBody (OpenAPI 3.x)
+            request_body = details.get("requestBody", {})
+            if request_body:
+                content = request_body.get("content", {})
+                json_schema = content.get("application/json", {}).get("schema", {})
+                if json_schema:
+                    props = resolve_schema(json_schema, definitions)
+                    for name, info in props.items():
+                        parameters.append({
+                            "name": name, "type": info.get("type", ""),
+                            "required": "", "description": info.get("description", ""), "in": "body",
+                        })
+
             # Response example
             response_example = ""
             for code in ("200", "201", "default"):
@@ -228,7 +248,7 @@ def parse_openapi(spec, base_url):
                     break
 
             # Build text
-            text_parts = [f"{method_upper} {path}"]
+            text_parts = ["{} {}".format(method_upper, path)]
             if summary:
                 text_parts.append(summary)
             if description and description != summary:
@@ -237,7 +257,7 @@ def parse_openapi(spec, base_url):
             endpoints.append({
                 "url": base_url, "slug": slug, "method": method_upper,
                 "api_path": path, "category": tags[0] if tags else "Uncategorized",
-                "title": summary or f"{method_upper} {path}",
+                "title": summary or "{} {}".format(method_upper, path),
                 "description": description[:200],
                 "source": "openapi",
                 "text": "\n".join(text_parts),
@@ -264,165 +284,233 @@ def resolve_schema(schema, definitions):
     return props
 
 
-def discover_sidebar(page, start_url):
-    """Extract endpoint links from sidebar navigation."""
-    links = page.evaluate("""(startUrl) => {
-        const results = [];
-        const baseHost = new URL(startUrl).hostname;
-        const selectors = [
-            'nav a[href]', '[class*="sidebar"] a[href]', 'aside a[href]',
-            '[role="navigation"] a[href]', '.menu__link[href]',
-            '[class*="nav"] a[href]', '[id*="sidebar"] a[href]',
-        ];
-        const seen = new Set();
-        for (const sel of selectors) {
-            try {
-                document.querySelectorAll(sel).forEach(a => {
-                    const href = a.getAttribute('href');
-                    if (!href || href === '#' || href.startsWith('javascript:')) return;
-                    let fullUrl;
-                    try { fullUrl = new URL(href, startUrl).href; } catch { return; }
-                    try { if (new URL(fullUrl).hostname !== baseHost) return; } catch { return; }
-                    if (fullUrl.match(/\\.(png|jpg|gif|css|js|svg|ico|woff)$/i)) return;
-                    if (seen.has(fullUrl)) return;
-                    seen.add(fullUrl);
+def discover_sidebar(client, start_url):
+    """Extract endpoint links from sidebar navigation using BeautifulSoup."""
+    try:
+        resp = client.get(start_url, follow_redirects=True)
+        if resp.status_code != 200:
+            return []
+    except Exception as e:
+        logger.warning(f"Failed to fetch {start_url}: {e}")
+        return []
 
-                    let method = null;
-                    const badge = a.querySelector('[class*="badge"], [class*="method"], span');
-                    if (badge) {
-                        const t = badge.innerText.trim().toUpperCase();
-                        if (['GET','POST','PUT','PATCH','DELETE'].includes(t)) method = t;
-                    }
-                    results.push({
-                        url: fullUrl,
-                        slug: fullUrl.split('/').pop().split('#')[0].split('?')[0],
-                        text: a.innerText.trim().substring(0, 200),
-                        method: method,
-                    });
-                });
-            } catch {}
-        }
-        return results;
-    }""", start_url)
+    soup = BeautifulSoup(resp.text, "html.parser")
+    base_host = urlparse(start_url).hostname
 
-    return [{
-        "url": l["url"], "slug": l.get("slug", ""), "method": l.get("method"),
-        "category": "Uncategorized", "description": l.get("text", ""),
-        "source": "sidebar",
-    } for l in links]
+    # Find sidebar/nav elements
+    nav_selectors = [
+        {"name": "nav"},
+        {"attrs": {"class": re.compile(r"sidebar", re.I)}},
+        {"name": "aside"},
+        {"attrs": {"role": "navigation"}},
+        {"attrs": {"class": re.compile(r"menu", re.I)}},
+        {"attrs": {"class": re.compile(r"nav", re.I)}},
+        {"attrs": {"id": re.compile(r"sidebar", re.I)}},
+    ]
+
+    links = []
+    seen = set()
+
+    for selector in nav_selectors:
+        for container in soup.find_all(**selector):
+            for a in container.find_all("a", href=True):
+                href = a["href"]
+                if href == "#" or href.startswith("javascript:"):
+                    continue
+
+                full_url = urljoin(start_url, href)
+                parsed = urlparse(full_url)
+
+                # Same host only
+                if parsed.hostname != base_host:
+                    continue
+                # Skip static assets
+                if re.search(r"\.(png|jpg|gif|css|js|svg|ico|woff)$", full_url, re.I):
+                    continue
+                if full_url in seen:
+                    continue
+                seen.add(full_url)
+
+                # Check for method badge
+                method = None
+                badge = a.find(class_=re.compile(r"badge|method", re.I))
+                if not badge:
+                    badge = a.find("span")
+                if badge:
+                    t = badge.get_text(strip=True).upper()
+                    if t in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+                        method = t
+
+                slug = full_url.split("/")[-1].split("#")[0].split("?")[0]
+                text = a.get_text(strip=True)[:200]
+
+                links.append({
+                    "url": full_url,
+                    "slug": slug,
+                    "method": method,
+                    "category": "Uncategorized",
+                    "description": text,
+                    "source": "sidebar",
+                })
+
+    return links
 
 
 # ---------------------------------------------------------------------------
-# Extraction (per-page scraping)
+# Extraction (per-page scraping with BeautifulSoup)
 # ---------------------------------------------------------------------------
 
-EXTRACT_JS = """() => {
-    const result = {
-        title: '', text: '', description_body: '', permissions: '',
-        method: null, api_path: '', parameters: [],
-        code_blocks: [], response_example: '', headers: [],
-    };
+def _visible_text(el):
+    """Get visible text from an element, skipping scripts/styles."""
+    if isinstance(el, Tag):
+        return el.get_text(separator=" ", strip=True)
+    return str(el).strip()
 
-    // Title
-    const h1 = document.querySelector('h1');
-    result.title = h1 ? h1.innerText.trim() : document.title;
 
-    // Method + path
-    const methodBadge = document.querySelector('[class*="method"], [class*="verb"], [class*="badge"]');
-    if (methodBadge) {
-        const t = methodBadge.innerText.trim().toUpperCase();
-        if (['GET','POST','PUT','PATCH','DELETE'].includes(t)) result.method = t;
-    }
-    if (!result.method) {
-        const m = document.body.innerText.match(/\\b(GET|POST|PUT|PATCH|DELETE)\\s+(\\/[\\w\\/{}:.-]+)/);
-        if (m) { result.method = m[1]; result.api_path = m[2]; }
-    }
-    if (!result.api_path) {
-        const el = document.querySelector('[class*="url"], [class*="path"], [class*="endpoint"], code');
-        if (el) {
-            const pm = el.innerText.trim().match(/(\\/v\\d+\\/[^\\s]+|\\/api\\/[^\\s]+)/);
-            if (pm) result.api_path = pm[1];
-        }
+def extract_page(client, url):
+    """Fetch a URL and extract endpoint data using BeautifulSoup."""
+    result = {
+        "title": "", "text": "", "description_body": "", "permissions": "",
+        "method": None, "api_path": "", "parameters": [],
+        "code_blocks": [], "response_example": "", "headers": [],
     }
 
-    // Full text
-    const article = document.querySelector('article') || document.querySelector('main')
-        || document.querySelector('[class*="content"]') || document.body;
-    result.text = article ? article.innerText.trim() : '';
-
-    // Description — clean paragraphs only
-    const descParts = [];
-    const seen = new Set();
-    if (article) {
-        article.querySelectorAll('p').forEach(el => {
-            if (el.closest('pre, code, nav, table, footer, [class*="sidebar"]')) return;
-            const text = el.innerText.trim();
-            if (text.length < 15 || text.length > 2000) return;
-            if (/^(GET|POST|PUT|PATCH|DELETE)\\s+\\//.test(text)) return;
-            if (/^Updated\\s+\\d/.test(text)) return;
-            if (/^Did this page help/.test(text)) return;
-            if (/^(Yes|No)$/.test(text)) return;
-            if (/^\\d+ Requests? This Month/.test(text)) return;
-            if (/^(Too Many Requests|Internal Server Error|Unauthenticated|Forbidden)$/i.test(text)) return;
-            if (/^(Information|RESPONSE BODY)\\s/i.test(text)) return;
-            if (/^Log in to see/.test(text)) return;
-            if (/^Make a request to see/.test(text)) return;
-            if (seen.has(text)) return;
-            seen.add(text);
-            descParts.push(text);
-        });
-    }
-    result.description_body = descParts.join('\\n\\n');
-
-    // Permissions
-    const pm = result.text.match(/[Pp]ermissions?\\s+required:?\\s*([^\\n]+)/);
-    if (pm) result.permissions = pm[0].trim();
-
-    // Parameters — leaf nodes only, deduplicated
-    const seenParams = new Set();
-    document.querySelectorAll('[class*="Param"], [class*="param"]').forEach(el => {
-        if (el.querySelectorAll('[class*="Param"], [class*="param"]').length > 0) return;
-        const nameEl = el.querySelector('[class*="name"], [class*="label"], [class*="key"], strong, b, code');
-        if (!nameEl) return;
-        const name = nameEl.innerText.trim();
-        if (!name || name.length > 80) return;
-        const typeEl = el.querySelector('[class*="type"]');
-        const typeText = typeEl ? typeEl.innerText.trim() : '';
-        const key = name + '::' + typeText;
-        if (seenParams.has(key)) return;
-        seenParams.add(key);
-        const descEl = el.querySelector('[class*="desc"], p');
-        const reqEl = el.querySelector('[class*="required"]');
-        result.parameters.push({
-            name: name, type: typeText,
-            required: reqEl ? 'required' : '',
-            description: descEl ? descEl.innerText.trim().substring(0, 500) : '',
-        });
-    });
-
-    // Response example
-    const respBlocks = document.querySelectorAll('[class*="response"], [class*="Response"]');
-    respBlocks.forEach(block => {
-        const pre = block.querySelector('pre');
-        if (pre && !result.response_example) result.response_example = pre.innerText.trim();
-    });
-
-    return result;
-}"""
-
-
-def extract_page(page, url):
-    """Navigate to a URL and extract endpoint data."""
     try:
-        page.goto(url, wait_until="networkidle", timeout=30000)
+        resp = client.get(url, follow_redirects=True)
+        if resp.status_code != 200:
+            return result
     except Exception:
-        pass
-    try:
-        page.wait_for_selector("article, main, [class*='content']", timeout=10000)
-    except Exception:
-        pass
-    time.sleep(2)
-    return page.evaluate(EXTRACT_JS)
+        return result
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Remove scripts, styles, nav, footer
+    for tag in soup.find_all(["script", "style", "nav", "footer"]):
+        tag.decompose()
+
+    # Title
+    h1 = soup.find("h1")
+    result["title"] = h1.get_text(strip=True) if h1 else (soup.title.get_text(strip=True) if soup.title else "")
+
+    # Method + path from badges/content
+    method_el = soup.find(class_=re.compile(r"method|verb|badge", re.I))
+    if method_el:
+        t = method_el.get_text(strip=True).upper()
+        if t in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+            result["method"] = t
+
+    # Find method+path pattern in text
+    article = soup.find("article") or soup.find("main") or soup.find(class_=re.compile(r"content", re.I)) or soup.body
+    if article:
+        article_text = article.get_text(separator="\n", strip=True)
+        result["text"] = article_text
+
+        if not result["method"]:
+            m = re.search(r"\b(GET|POST|PUT|PATCH|DELETE)\s+(/[\w/{}\.:=-]+)", article_text)
+            if m:
+                result["method"] = m.group(1)
+                result["api_path"] = m.group(2)
+
+    # Find API path
+    if not result["api_path"]:
+        path_el = soup.find(class_=re.compile(r"url|path|endpoint", re.I))
+        if not path_el:
+            path_el = soup.find("code")
+        if path_el:
+            path_text = path_el.get_text(strip=True)
+            pm = re.search(r"(/v\d+/[^\s]+|/api/[^\s]+)", path_text)
+            if pm:
+                result["api_path"] = pm.group(1)
+
+    # Description — clean paragraphs only
+    desc_parts = []
+    seen = set()
+    if article:
+        for p_el in article.find_all("p"):
+            # Skip paragraphs inside code, tables, sidebars
+            if p_el.find_parent(["pre", "code", "table"]):
+                continue
+            parent_class = " ".join(p_el.find_parent(attrs={"class": True}).get("class", []) if p_el.find_parent(attrs={"class": True}) else [])
+            if "sidebar" in parent_class.lower():
+                continue
+
+            text = p_el.get_text(strip=True)
+            if len(text) < 15 or len(text) > 2000:
+                continue
+            if re.match(r"^(GET|POST|PUT|PATCH|DELETE)\s+/", text):
+                continue
+            if re.match(r"^Updated\s+\d", text):
+                continue
+            if re.match(r"^Did this page help", text):
+                continue
+            if re.match(r"^(Yes|No)$", text):
+                continue
+            if re.match(r"^\d+ Requests? This Month", text):
+                continue
+            if re.match(r"^(Too Many Requests|Internal Server Error|Unauthenticated|Forbidden)$", text, re.I):
+                continue
+            if re.match(r"^(Information|RESPONSE BODY)\s", text, re.I):
+                continue
+            if re.match(r"^Log in to see", text):
+                continue
+            if re.match(r"^Make a request to see", text):
+                continue
+            if text in seen:
+                continue
+            seen.add(text)
+            desc_parts.append(text)
+
+    result["description_body"] = "\n\n".join(desc_parts)
+
+    # Permissions
+    pm = re.search(r"[Pp]ermissions?\s+required:?\s*([^\n]+)", result.get("text", ""))
+    if pm:
+        result["permissions"] = pm.group(0).strip()
+
+    # Parameters
+    seen_params = set()
+    for param_el in soup.find_all(class_=re.compile(r"[Pp]aram")):
+        # Skip containers that have child param elements
+        if param_el.find(class_=re.compile(r"[Pp]aram")):
+            continue
+
+        name_el = param_el.find(class_=re.compile(r"name|label|key", re.I))
+        if not name_el:
+            name_el = param_el.find(["strong", "b", "code"])
+        if not name_el:
+            continue
+
+        name = name_el.get_text(strip=True)
+        if not name or len(name) > 80:
+            continue
+
+        type_el = param_el.find(class_=re.compile(r"type", re.I))
+        type_text = type_el.get_text(strip=True) if type_el else ""
+
+        key = "{}::{}".format(name, type_text)
+        if key in seen_params:
+            continue
+        seen_params.add(key)
+
+        desc_el = param_el.find(class_=re.compile(r"desc", re.I))
+        if not desc_el:
+            desc_el = param_el.find("p")
+        req_el = param_el.find(class_=re.compile(r"required", re.I))
+
+        result["parameters"].append({
+            "name": name,
+            "type": type_text,
+            "required": "required" if req_el else "",
+            "description": desc_el.get_text(strip=True)[:500] if desc_el else "",
+        })
+
+    # Response example
+    for resp_el in soup.find_all(class_=re.compile(r"[Rr]esponse")):
+        pre = resp_el.find("pre")
+        if pre and not result["response_example"]:
+            result["response_example"] = pre.get_text(strip=True)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -434,39 +522,23 @@ def main():
     parser.add_argument("url", help="Starting URL of the API docs")
     parser.add_argument("-p", "--password", default=None, help="Password for gated docs")
     parser.add_argument("-o", "--output", default="output", help="Output directory")
-    parser.add_argument("-d", "--delay", type=float, default=1.5, help="Delay between requests")
+    parser.add_argument("-d", "--delay", type=float, default=0.5, help="Delay between requests")
     parser.add_argument("--max", type=int, default=500, help="Max endpoints")
-    parser.add_argument("--no-headless", action="store_true", help="Show browser")
     args = parser.parse_args()
-
-    from playwright.sync_api import sync_playwright
 
     os.makedirs(args.output, exist_ok=True)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=not args.no_headless)
-        ctx = browser.new_context(user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36")
-        page = ctx.new_page()
-
-        # Navigate
-        logger.info(f"Navigating to {args.url}")
-        try:
-            page.goto(args.url, wait_until="networkidle", timeout=30000)
-        except Exception as e:
-            logger.warning(f"Slow navigation: {e}")
-        time.sleep(2)
-
+    with httpx.Client(headers=DEFAULT_HEADERS, timeout=30, follow_redirects=True) as client:
         # Auth
         if args.password:
-            if not authenticate(page, args.password):
-                browser.close()
+            if not authenticate(client, args.url, args.password):
                 return
 
         # Discover
-        endpoints = discover_endpoints(page, args.url)
+        logger.info(f"Discovering endpoints at {args.url}")
+        endpoints = discover_endpoints(client, args.url)
         if not endpoints:
             logger.error("No endpoints found")
-            browser.close()
             return
 
         # Split: OpenAPI endpoints already have data
@@ -478,18 +550,19 @@ def main():
         if openapi_eps:
             logger.info(f"Loaded {len(openapi_eps)} endpoints from OpenAPI spec")
             for ep in openapi_eps:
-                logger.info(f"  ✓ {ep.get('method', '?'):6s} {ep.get('api_path', ep.get('slug', ''))}")
+                logger.info(f"  {ep.get('method', '?'):6s} {ep.get('api_path', ep.get('slug', ''))}")
                 all_data.append(ep)
 
         if scrape_eps:
             logger.info(f"\nScraping {len(scrape_eps)} endpoint pages...\n")
 
-        for i, ep in enumerate(scrape_eps, 1):
-            slug = ep.get("slug", f"endpoint_{i}")
+        import time
+        for i, ep in enumerate(scrape_eps[:args.max], 1):
+            slug = ep.get("slug", "endpoint_{}".format(i))
             logger.info(f"[{i:3d}/{len(scrape_eps)}] {slug}")
 
             try:
-                data = extract_page(page, ep["url"])
+                data = extract_page(client, ep["url"])
                 merged = {**ep}
                 for key in ("title", "method", "api_path"):
                     if data.get(key):
@@ -502,39 +575,27 @@ def main():
                 merged["response_example"] = data.get("response_example", "")
                 merged["headers"] = data.get("headers", [])
 
-                if merged.get("text", "").strip():
-                    all_data.append(merged)
-                    logger.info(f"         ✓ {merged.get('title', slug)}")
-                else:
-                    time.sleep(3)
-                    data = extract_page(page, ep["url"])
-                    merged["text"] = data.get("text", "")
-                    merged["description_body"] = data.get("description_body", "")
-                    merged["parameters"] = data.get("parameters", [])
-                    all_data.append(merged)
-                    logger.info(f"         {'✓' if merged['text'].strip() else '⚠'} {slug}")
+                all_data.append(merged)
+                logger.info(f"         {'done' if merged.get('text', '').strip() else 'empty'} {merged.get('title', slug)}")
 
             except Exception as e:
-                logger.error(f"         ✗ {e}")
+                logger.error(f"         error: {e}")
 
             time.sleep(args.delay)
-
-        browser.close()
 
     # Save each endpoint as its own file
     endpoints_dir = os.path.join(args.output, "endpoints")
     os.makedirs(endpoints_dir, exist_ok=True)
 
     for i, ep in enumerate(all_data, 1):
-        slug = re.sub(r"[^a-zA-Z0-9_\-]", "_", ep.get("slug", f"endpoint_{i}"))
+        slug = re.sub(r"[^a-zA-Z0-9_\-]", "_", ep.get("slug", "endpoint_{}".format(i)))
         method = (ep.get("method") or "UNKNOWN").upper()
-        filename = f"{method}_{slug}.json"
+        filename = "{}_{}.json".format(method, slug)
         filepath = os.path.join(endpoints_dir, filename)
         with open(filepath, "w") as f:
             json.dump(ep, f, indent=2, ensure_ascii=False)
 
-    logger.info(f"\nSaved {len(all_data)} endpoints → {endpoints_dir}/")
-    logger.info(f"  Each endpoint is its own JSON file: {endpoints_dir}/GET_example.json")
+    logger.info(f"\nSaved {len(all_data)} endpoints to {endpoints_dir}/")
     logger.info("Next: python3 scripts/02_categorize.py -o " + args.output)
 
 
