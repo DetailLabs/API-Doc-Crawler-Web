@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e"/>
+      <stop offset="100%" style="stop-color:#16213e"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="80" fill="url(#bg2)"/>
+  <!-- Document -->
+  <rect x="140" y="80" width="200" height="260" rx="12" fill="#2a3a5c" stroke="#4da6ff" stroke-width="3"/>
+  <!-- Document fold -->
+  <path d="M290 80 L340 80 L340 130 Z" fill="#3a4f7a"/>
+  <!-- Code lines on document -->
+  <rect x="170" y="120" width="80" height="8" rx="4" fill="#4da6ff" opacity="0.6"/>
+  <rect x="170" y="145" width="120" height="8" rx="4" fill="#4da6ff" opacity="0.4"/>
+  <rect x="170" y="170" width="60" height="8" rx="4" fill="#51cf66" opacity="0.6"/>
+  <rect x="170" y="195" width="140" height="8" rx="4" fill="#4da6ff" opacity="0.4"/>
+  <rect x="170" y="220" width="100" height="8" rx="4" fill="#ff6b6b" opacity="0.6"/>
+  <rect x="170" y="245" width="130" height="8" rx="4" fill="#4da6ff" opacity="0.4"/>
+  <rect x="170" y="270" width="70" height="8" rx="4" fill="#ffd43b" opacity="0.6"/>
+  <!-- Scanning beam -->
+  <rect x="120" y="290" width="240" height="4" rx="2" fill="#4da6ff" opacity="0.9"/>
+  <rect x="120" y="288" width="240" height="8" rx="4" fill="#4da6ff" opacity="0.2"/>
+  <!-- Arrow down into collection -->
+  <path d="M240 360 L240 400 L220 400 L256 440 L292 400 L272 400 L272 360 Z" fill="#51cf66"/>
+  <!-- Postman-like collection icon -->
+  <rect x="220" y="445" width="72" height="20" rx="6" fill="#ff6b6b"/>
+  <text x="256" y="460" text-anchor="middle" font-family="monospace" font-weight="bold" font-size="12" fill="#fff">JSON</text>
+</svg>

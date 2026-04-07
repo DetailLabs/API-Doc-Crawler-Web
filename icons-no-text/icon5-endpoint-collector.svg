@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg5" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#141e30"/>
+      <stop offset="100%" style="stop-color:#243b55"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="0" fill="url(#bg5)"/>
+  <!-- Funnel shape -->
+  <path d="M100 120 L412 120 L310 280 L310 370 L202 370 L202 280 Z" fill="#1e3456" stroke="#4da6ff" stroke-width="3" opacity="0.8"/>
+  <!-- Incoming endpoint pills at top -->
+  <rect x="115" y="85" width="70" height="26" rx="13" fill="#51cf66"/>
+  <rect x="200" y="85" width="75" height="26" rx="13" fill="#4da6ff"/>
+  <rect x="290" y="85" width="65" height="26" rx="13" fill="#ffd43b"/>
+  <rect x="370" y="85" width="55" height="26" rx="13" fill="#ff6b6b"/>
+  <!-- Scattered dots inside funnel -->
+  <circle cx="200" cy="160" r="5" fill="#51cf66" opacity="0.7"/>
+  <circle cx="260" cy="150" r="5" fill="#4da6ff" opacity="0.7"/>
+  <circle cx="310" cy="165" r="5" fill="#ffd43b" opacity="0.7"/>
+  <circle cx="180" cy="190" r="5" fill="#ff6b6b" opacity="0.7"/>
+  <circle cx="330" cy="185" r="5" fill="#51cf66" opacity="0.7"/>
+  <circle cx="240" cy="200" r="5" fill="#4da6ff" opacity="0.7"/>
+  <circle cx="280" cy="220" r="5" fill="#ffd43b" opacity="0.7"/>
+  <circle cx="250" cy="250" r="5" fill="#ff6b6b" opacity="0.7"/>
+  <!-- Output: collection box -->
+  <rect x="202" y="380" width="108" height="60" rx="10" fill="#2a3a5c" stroke="#4da6ff" stroke-width="2.5"/>
+  <!-- Drip dots -->
+  <circle cx="256" cy="365" r="4" fill="#4da6ff" opacity="0.8">
+    <animate attributeName="cy" values="355;375;355" dur="1.5s" repeatCount="indefinite"/>
+  </circle>
+</svg>
