@@ -5,11 +5,9 @@
       "use": "@vercel/python"
     }
   ],
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/api/index.py"
-    }
+  "routes": [
+    { "src": "/static/(.*)", "dest": "/static/$1" },
+    { "src": "/(.*)", "dest": "/api/index.py" }
   ],
   "env": {
     "JOBS_DIR": "/tmp/jobs"
