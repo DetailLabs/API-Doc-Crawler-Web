@@ -627,5 +627,11 @@
             if (e.key === 'Enter') startCrawl();
         });
     </script>
+
+    <!-- Vercel Web Analytics -->
+    <script type="module">
+        import { inject } from '/static/analytics.js';
+        inject();
+    </script>
 </body>
 </html>

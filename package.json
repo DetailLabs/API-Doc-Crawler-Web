@@ -1,0 +1,12 @@
+{
+  "name": "api-doc-crawler-web",
+  "version": "1.0.0",
+  "description": "API Doc Crawler Web Edition",
+  "private": true,
+  "scripts": {
+    "build": "echo 'No build step required'"
+  },
+  "dependencies": {
+    "@vercel/analytics": "^1.1.1"
+  }
+}
