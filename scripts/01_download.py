@@ -37,6 +37,21 @@ DEFAULT_HEADERS = {
 # Auth
 # ---------------------------------------------------------------------------
 
+def is_password_protected(client, url):
+    """Check whether *url* is behind a password gate (without submitting anything)."""
+    try:
+        resp = client.get(url, follow_redirects=True)
+        if resp.status_code != 200:
+            return False
+        soup = BeautifulSoup(resp.text, "html.parser")
+        pw_input = soup.find("input", attrs={"type": "password"})
+        if not pw_input:
+            pw_input = soup.find("input", attrs={"name": re.compile(r"pass", re.I)})
+        return pw_input is not None
+    except Exception:
+        return False
+
+
 def authenticate(client, url, password):
     """Attempt password authentication by POSTing to the page."""
     logger.info("Attempting password authentication...")
@@ -106,10 +121,16 @@ def discover_endpoints(client, start_url):
     if len(openapi) >= 3 and all(ep.get("api_path") and ep.get("method") for ep in openapi):
         logger.info("OpenAPI spec is complete, skipping sidebar/content scan")
     else:
-        sidebar = discover_sidebar(client, start_url)
-        if sidebar:
-            logger.info(f"Found {len(sidebar)} links via sidebar")
-            all_eps.extend(sidebar)
+        # Try ReadMe.io sidebar API first (JS-rendered sidebars)
+        readme_eps = discover_readme_sidebar(client, start_url)
+        if readme_eps:
+            logger.info(f"Found {len(readme_eps)} pages via ReadMe sidebar API")
+            all_eps.extend(readme_eps)
+        else:
+            sidebar = discover_sidebar(client, start_url)
+            if sidebar:
+                logger.info(f"Found {len(sidebar)} links via sidebar")
+                all_eps.extend(sidebar)
 
     # Deduplicate
     seen = set()
@@ -123,14 +144,22 @@ def discover_endpoints(client, start_url):
             seen.add(key)
             unique.append(ep)
 
-    # Filter doc pages
+    # Filter doc pages (keep OpenAPI entries and ReadMe "endpoint" types unconditionally)
     doc_slugs = {
         "home", "index", "docs", "reference", "getting-started", "getting-started-5",
         "overview", "introduction", "authentication", "errors", "errors-1",
         "rate-limits", "rate-limits-1", "pagination", "pagination-1", "changelog",
         "idempotency-1", "permission-groups-1", "generate-ed25519-keys", "w",
     }
-    unique = [ep for ep in unique if ep.get("source") == "openapi" or ep.get("slug", "").lower() not in doc_slugs]
+
+    def _keep(ep):
+        if ep.get("source") == "openapi":
+            return True
+        if ep.get("source") == "readme_sidebar":
+            return ep.get("page_type") == "endpoint"
+        return ep.get("slug", "").lower() not in doc_slugs
+
+    unique = [ep for ep in unique if _keep(ep)]
 
     logger.info(f"Discovery complete: {len(unique)} unique endpoints")
     return unique
@@ -294,6 +323,80 @@ def _same_site(host1, host2):
     root1 = ".".join(parts1[-2:]) if len(parts1) >= 2 else host1
     root2 = ".".join(parts2[-2:]) if len(parts2) >= 2 else host2
     return root1 == root2
+
+
+def discover_readme_sidebar(client, start_url):
+    """Discover endpoints via ReadMe.io's sidebar JSON API.
+
+    ReadMe.io sites render their sidebar with JavaScript, so the HTML returned
+    by the server doesn't contain navigation links.  However, the page embeds
+    metadata (``<meta name="readme-subdomain">``, ``<meta name="readme-version">``)
+    that lets us call the internal sidebar API directly.
+    """
+    try:
+        resp = client.get(start_url, follow_redirects=True)
+        if resp.status_code != 200:
+            return []
+    except Exception:
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    subdomain_tag = soup.find("meta", attrs={"name": "readme-subdomain"})
+    version_tag = soup.find("meta", attrs={"name": "readme-version"})
+    if not subdomain_tag:
+        return []
+
+    subdomain = subdomain_tag.get("content", "")
+    version = version_tag.get("content", "1.0") if version_tag else "1.0"
+    if not subdomain:
+        return []
+
+    base = urlparse(start_url)
+    sidebar_url = "{}://{}/{}/api-next/v2/branches/{}/sidebar?page_type=reference".format(
+        base.scheme, base.netloc, subdomain, version
+    )
+    logger.info(f"Detected ReadMe.io site (subdomain={subdomain}), fetching sidebar API...")
+
+    try:
+        resp = client.get(sidebar_url, follow_redirects=True)
+        if resp.status_code != 200:
+            return []
+        categories = resp.json()
+    except Exception as e:
+        logger.warning(f"ReadMe sidebar API failed: {e}")
+        return []
+
+    # Flatten the nested category → page → subpage structure
+    endpoints = []
+
+    def _collect(pages, category_name):
+        for page in pages:
+            slug = page.get("slug", "")
+            title = page.get("title", "")
+            page_type = page.get("type", "basic")  # "endpoint" or "basic"
+            full_url = "{}://{}/reference/{}".format(base.scheme, base.netloc, slug)
+
+            endpoints.append({
+                "url": full_url,
+                "slug": slug,
+                "title": title,
+                "method": None,
+                "category": category_name,
+                "description": title,
+                "source": "readme_sidebar",
+                "page_type": page_type,
+            })
+            # Recurse into child pages
+            if page.get("pages"):
+                _collect(page["pages"], category_name)
+
+    for cat in categories:
+        cat_title = cat.get("title", "Uncategorized")
+        if cat.get("pages"):
+            _collect(cat["pages"], cat_title)
+
+    return endpoints
 
 
 def discover_sidebar(client, start_url):
