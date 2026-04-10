@@ -39,7 +39,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 # ---------------------------------------------------------------------------
 
 jobs: Dict[str, dict] = {}
-JOBS_DIR = Path("jobs")
+JOBS_DIR = Path(os.environ.get("JOBS_DIR", "jobs"))
 
 
 def get_job_dir(job_id: str) -> Path:
@@ -111,6 +111,12 @@ def run_pipeline(job_id: str, req: CrawlRequest):
                     job["status"] = "failed"
                     job["error"] = "Authentication failed — check password"
                     return
+
+            # Check for password gate before discovery
+            if not req.password and step1.is_password_protected(client, req.url):
+                job["status"] = "failed"
+                job["error"] = "This site is password-protected. Please provide a password in Advanced Options and try again."
+                return
 
             # Discover
             job["progress"] = "Discovering endpoints..."
