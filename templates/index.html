@@ -146,6 +146,40 @@
             margin-bottom: 24px;
         }
 
+        .discovery-log {
+            margin-top: 16px;
+            max-height: 180px;
+            overflow-y: auto;
+            background: #0f172a;
+            border: 1px solid #1e293b;
+            border-radius: 8px;
+            padding: 12px;
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            color: #64748b;
+            scroll-behavior: smooth;
+        }
+
+        .discovery-log:empty {
+            display: none;
+        }
+
+        .discovery-log .log-entry {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .discovery-log .log-entry:last-child {
+            color: #e2e8f0;
+        }
+
+        .discovery-log .log-bullet {
+            color: #3b82f6;
+            margin-right: 6px;
+        }
+
         .status-row {
             display: flex;
             align-items: center;
@@ -406,8 +440,15 @@
                         </div>
                         <div class="form-group">
                             <label for="max_endpoints">Max endpoints</label>
-                            <input type="number" id="max_endpoints" value="500" min="1" max="2000">
+                            <input type="number" id="max_endpoints" value="500" min="1" placeholder="Unlimited">
                         </div>
+                    </div>
+                    <div class="row">
+                        <div class="form-group">
+                            <label for="max_pages">Max pages to scan</label>
+                            <input type="number" id="max_pages" value="50" min="1" placeholder="Unlimited">
+                        </div>
+                        <div class="form-group"></div>
                     </div>
                 </div>
 
@@ -449,6 +490,7 @@
                 <div class="progress-bar-track">
                     <div class="progress-bar-fill indeterminate" id="progress-bar"></div>
                 </div>
+                <div class="discovery-log" id="discovery-log"></div>
                 <div id="error-container"></div>
             </div>
         </div>
@@ -493,7 +535,8 @@
                 url: url,
                 password: document.getElementById('password').value || null,
                 collection_name: document.getElementById('collection_name').value || null,
-                max_endpoints: parseInt(document.getElementById('max_endpoints').value) || 500,
+                max_endpoints: parseInt(document.getElementById('max_endpoints').value) || 0,
+                max_pages: parseInt(document.getElementById('max_pages').value) || 0,
             };
 
             document.getElementById('crawl-btn').disabled = true;
@@ -534,6 +577,16 @@
 
                 document.getElementById('status-label').textContent = statusNames[job.status] || job.status;
                 document.getElementById('progress-text').textContent = job.progress;
+
+                // Update discovery log
+                const logEl = document.getElementById('discovery-log');
+                if (job.discovery_log && job.discovery_log.length > 0) {
+                    const entries = job.discovery_log.map(
+                        msg => `<div class="log-entry"><span class="log-bullet">›</span>${escapeHtml(msg)}</div>`
+                    ).join('');
+                    logEl.innerHTML = entries;
+                    logEl.scrollTop = logEl.scrollHeight;
+                }
 
                 // Update progress bar
                 const bar = document.getElementById('progress-bar');
@@ -613,6 +666,7 @@
             document.getElementById('crawl-btn').disabled = false;
             document.getElementById('status-label').className = 'status-label';
             document.getElementById('error-container').innerHTML = '';
+            document.getElementById('discovery-log').innerHTML = '';
             document.getElementById('progress-bar').className = 'progress-bar-fill indeterminate';
         }
 

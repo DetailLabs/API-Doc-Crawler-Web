@@ -2,8 +2,8 @@
 """
 Step 1: Download all API endpoints from a documentation site.
 
-Uses httpx + BeautifulSoup instead of a browser. Optimized for OpenAPI/Swagger
-specs and ReadMe-style documentation sites.
+Uses httpx + BeautifulSoup with recursive link following (BFS) for deep
+endpoint discovery.
 
 Usage:
     python3 scripts/01_download.py https://developers.example.com/reference -o output
@@ -18,6 +18,8 @@ import json
 import os
 import re
 import logging
+import time
+from collections import deque
 from urllib.parse import urlparse, urljoin
 
 import httpx
@@ -32,6 +34,32 @@ DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
 }
+
+
+def fetch_page_html(client, url, max_retries=3):
+    """Fetch a URL via httpx and return the HTML string.
+    Retries with exponential backoff on 429 (rate limit) responses."""
+    for attempt in range(max_retries):
+        try:
+            resp = client.get(url, follow_redirects=True)
+            if resp.status_code == 200:
+                return resp.text
+            if resp.status_code == 429:
+                # Rate limited — wait and retry
+                retry_after = int(resp.headers.get("Retry-After", 2 ** (attempt + 1)))
+                wait = min(retry_after, 30)
+                logger.warning(f"Rate limited (429) on {url} — retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
+                time.sleep(wait)
+                continue
+            # Other non-200 status
+            logger.warning(f"HTTP {resp.status_code} for {url}")
+            return ""
+        except Exception as e:
+            logger.warning(f"Failed to fetch {url}: {e}")
+            return ""
+    logger.warning(f"Gave up on {url} after {max_retries} retries (rate limited)")
+    return ""
+
 
 # ---------------------------------------------------------------------------
 # Auth
@@ -106,30 +134,56 @@ def authenticate(client, url, password):
 # Discovery
 # ---------------------------------------------------------------------------
 
-def discover_endpoints(client, start_url):
-    """Find all endpoint URLs via OpenAPI spec, sidebar nav, and content scan."""
-    logger.info("Starting endpoint discovery...")
+def discover_endpoints(client, start_url, progress_callback=None, max_endpoints=500, max_pages=50):
+    """Find all endpoint URLs via OpenAPI spec, sidebar nav, and content scan.
+
+    progress_callback: optional callable(str) to report progress messages.
+    max_endpoints: cap on how many endpoints to discover.
+    max_pages: how many sub-pages to scan during recursive discovery.
+    """
+    def _progress(msg):
+        logger.info(msg)
+        if progress_callback:
+            progress_callback(msg)
+
+    _progress("Checking for OpenAPI spec...")
     all_eps = []
 
     # Strategy 1: OpenAPI spec
     openapi = try_openapi(client, start_url)
     if openapi:
-        logger.info(f"Found {len(openapi)} endpoints via OpenAPI spec")
+        _progress(f"Found {len(openapi)} endpoints via OpenAPI spec")
         all_eps.extend(openapi)
 
     # If OpenAPI found 3+ complete endpoints, skip noisy strategies
     if len(openapi) >= 3 and all(ep.get("api_path") and ep.get("method") for ep in openapi):
-        logger.info("OpenAPI spec is complete, skipping sidebar/content scan")
+        _progress("OpenAPI spec is complete — skipping sidebar scan")
     else:
         # Try ReadMe.io sidebar API first (JS-rendered sidebars)
+        _progress("Checking for ReadMe.io sidebar...")
         readme_eps = discover_readme_sidebar(client, start_url)
         if readme_eps:
-            logger.info(f"Found {len(readme_eps)} pages via ReadMe sidebar API")
+            _progress(f"Found {len(readme_eps)} pages via ReadMe sidebar API")
             all_eps.extend(readme_eps)
         else:
+            # Try static sidebar first
+            _progress("Scanning sidebar navigation...")
             sidebar = discover_sidebar(client, start_url)
             if sidebar:
-                logger.info(f"Found {len(sidebar)} links via sidebar")
+                _progress(f"Found {len(sidebar)} links via static sidebar")
+
+            # Always try recursive discovery to find deeper endpoint pages
+            # Static sidebar often finds only top-level category pages
+            _progress("Scanning sub-pages for more endpoints...")
+            recursive = discover_sidebar_recursive(
+                client, start_url, max_pages=max_pages, delay=0.5,
+                progress_callback=progress_callback,
+            )
+            if recursive and len(recursive) > len(sidebar):
+                _progress(f"Recursive scan found {len(recursive)} pages (vs {len(sidebar)} from sidebar)")
+                all_eps.extend(recursive)
+            elif sidebar:
+                _progress(f"Using {len(sidebar)} sidebar links")
                 all_eps.extend(sidebar)
 
     # Deduplicate
@@ -179,16 +233,13 @@ def try_openapi(client, start_url):
     ]
 
     # Check page for spec links
-    try:
-        resp = client.get(start_url, follow_redirects=True)
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, "html.parser")
-            for a in soup.find_all("a", href=True):
-                href = a["href"]
-                if ("openapi" in href or "swagger" in href) and (href.endswith(".json") or href.endswith(".yaml")):
-                    candidates.insert(0, urljoin(start_url, href))
-    except Exception:
-        pass
+    page_html = fetch_page_html(client, start_url)
+    if page_html:
+        soup = BeautifulSoup(page_html, "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if ("openapi" in href or "swagger" in href) and (href.endswith(".json") or href.endswith(".yaml")):
+                candidates.insert(0, urljoin(start_url, href))
 
     for url in candidates:
         try:
@@ -401,15 +452,11 @@ def discover_readme_sidebar(client, start_url):
 
 def discover_sidebar(client, start_url):
     """Extract endpoint links from sidebar navigation using BeautifulSoup."""
-    try:
-        resp = client.get(start_url, follow_redirects=True)
-        if resp.status_code != 200:
-            return []
-    except Exception as e:
-        logger.warning(f"Failed to fetch {start_url}: {e}")
+    html = fetch_page_html(client, start_url)
+    if not html:
         return []
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
     base_host = urlparse(start_url).hostname
 
     # Find sidebar/nav elements
@@ -471,6 +518,138 @@ def discover_sidebar(client, start_url):
     return links
 
 
+def _extract_nav_links(html, start_url):
+    """Extract same-site navigation links from HTML string.
+    Returns a set of absolute URLs found in nav/sidebar elements."""
+    soup = BeautifulSoup(html, "html.parser")
+    base_host = urlparse(start_url).hostname
+    start_path = urlparse(start_url).path.rstrip("/")
+
+    nav_selectors = [
+        {"name": "nav"},
+        {"attrs": {"class": re.compile(r"sidebar", re.I)}},
+        {"name": "aside"},
+        {"attrs": {"role": "navigation"}},
+        {"attrs": {"class": re.compile(r"menu", re.I)}},
+        {"attrs": {"class": re.compile(r"nav", re.I)}},
+        {"attrs": {"id": re.compile(r"sidebar", re.I)}},
+    ]
+
+    urls = set()
+    for selector in nav_selectors:
+        for container in soup.find_all(**selector):
+            for a in container.find_all("a", href=True):
+                href = a["href"]
+                if href == "#" or href.startswith("javascript:"):
+                    continue
+                full_url = urljoin(start_url, href)
+                # Strip fragment and query
+                parsed = urlparse(full_url)
+                clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                clean_url = clean_url.rstrip("/")
+
+                if not _same_site(parsed.hostname, base_host):
+                    continue
+                if re.search(r"\.(png|jpg|gif|css|js|svg|ico|woff)$", clean_url, re.I):
+                    continue
+                # Only follow links under the starting path prefix
+                if start_path and not parsed.path.startswith(start_path):
+                    continue
+                urls.add(clean_url)
+
+    # Also check all links in the page body (not just nav) that match the path prefix
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if href == "#" or href.startswith("javascript:"):
+            continue
+        full_url = urljoin(start_url, href)
+        parsed = urlparse(full_url)
+        clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
+        if not _same_site(parsed.hostname, base_host):
+            continue
+        if re.search(r"\.(png|jpg|gif|css|js|svg|ico|woff)$", clean_url, re.I):
+            continue
+        if start_path and not parsed.path.startswith(start_path):
+            continue
+        urls.add(clean_url)
+
+    return urls
+
+
+def discover_sidebar_recursive(client, start_url, max_pages=50, delay=0.3, progress_callback=None):
+    """Recursively discover endpoint pages via BFS link following.
+
+    Follows links under the start URL's path prefix to discover sub-pages.
+
+    Returns a list of endpoint dicts (same format as discover_sidebar).
+    """
+    start_url_clean = start_url.rstrip("/")
+    visited = set()
+    queue = deque([start_url_clean])
+    visited.add(start_url_clean)
+    all_page_urls = set()
+
+    limit_label = str(max_pages) if max_pages > 0 else "∞"
+    logger.info(f"Starting recursive discovery from {start_url_clean} (max {limit_label} pages)")
+
+    pages_visited = 0
+    while queue and (max_pages <= 0 or pages_visited < max_pages):
+        current_url = queue.popleft()
+        pages_visited += 1
+
+        # Extract a short label from the URL for the progress message
+        page_label = current_url.split("/")[-1] or current_url.split("/")[-2] or "root"
+        progress_msg = f"Scanning page {pages_visited}/{limit_label}: {page_label}"
+        logger.info(f"  BFS [{pages_visited}/{limit_label}] scanning: {current_url}")
+        if progress_callback:
+            progress_callback(progress_msg)
+
+        html = fetch_page_html(client, current_url)
+        if not html:
+            continue
+
+        # Extract links from this page
+        found_urls = _extract_nav_links(html, start_url)
+
+        for url in found_urls:
+            if url not in visited:
+                visited.add(url)
+                queue.append(url)
+            all_page_urls.add(url)
+
+        if pages_visited < max_pages and queue:
+            time.sleep(delay)
+
+    # Remove the start URL itself and any obvious category/index pages
+    all_page_urls.discard(start_url_clean)
+
+    logger.info(f"  BFS complete: visited {pages_visited} pages, found {len(all_page_urls)} unique links")
+
+    # Build endpoint list from discovered URLs
+    endpoints = []
+    seen = set()
+    for url in sorted(all_page_urls):
+        if url in seen:
+            continue
+        seen.add(url)
+
+        slug = url.split("/")[-1].split("#")[0].split("?")[0]
+        if not slug:
+            continue
+
+        endpoints.append({
+            "url": url,
+            "slug": slug,
+            "method": None,
+            "category": "Uncategorized",
+            "description": "",
+            "source": "recursive_sidebar",
+        })
+
+    logger.info(f"  Recursive discovery yielded {len(endpoints)} endpoint candidates")
+    return endpoints
+
+
 # ---------------------------------------------------------------------------
 # Extraction (per-page scraping with BeautifulSoup)
 # ---------------------------------------------------------------------------
@@ -490,14 +669,11 @@ def extract_page(client, url):
         "code_blocks": [], "response_example": "", "headers": [],
     }
 
-    try:
-        resp = client.get(url, follow_redirects=True)
-        if resp.status_code != 200:
-            return result
-    except Exception:
+    html = fetch_page_html(client, url)
+    if not html:
         return result
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
 
     # Remove scripts, styles, nav, footer
     for tag in soup.find_all(["script", "style", "nav", "footer"]):
@@ -686,7 +862,6 @@ def main():
         if scrape_eps:
             logger.info(f"\nScraping {len(scrape_eps)} endpoint pages...\n")
 
-        import time
         for i, ep in enumerate(scrape_eps[:args.max], 1):
             slug = ep.get("slug", "endpoint_{}".format(i))
             logger.info(f"[{i:3d}/{len(scrape_eps)}] {slug}")

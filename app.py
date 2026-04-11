@@ -69,7 +69,8 @@ class CrawlRequest(BaseModel):
     url: str
     password: Optional[str] = None
     collection_name: Optional[str] = None
-    max_endpoints: int = 500
+    max_endpoints: int = 0  # 0 = unlimited
+    max_pages: int = 0      # 0 = unlimited
     delay: float = 0.5
 
 
@@ -79,6 +80,7 @@ class JobStatus(BaseModel):
     progress: str
     endpoint_count: int = 0
     error: Optional[str] = None
+    discovery_log: list = []
 
 
 # ---------------------------------------------------------------------------
@@ -118,13 +120,30 @@ def run_pipeline(job_id: str, req: CrawlRequest):
                 job["error"] = "This site is password-protected. Please provide a password in Advanced Options and try again."
                 return
 
-            # Discover
+            # Discover — pass progress callback so the UI shows live updates
             job["progress"] = "Discovering endpoints..."
-            endpoints = step1.discover_endpoints(client, req.url)
+
+            def _on_progress(msg):
+                job["progress"] = msg
+                job["discovery_log"].append(msg)
+                # Keep log bounded to avoid memory bloat
+                if len(job["discovery_log"]) > 200:
+                    job["discovery_log"] = job["discovery_log"][-200:]
+
+            endpoints = step1.discover_endpoints(
+                client, req.url,
+                progress_callback=_on_progress,
+                max_endpoints=req.max_endpoints,
+                max_pages=req.max_pages,
+            )
             if not endpoints:
                 job["status"] = "failed"
                 job["error"] = "No endpoints found at this URL"
                 return
+
+            # Apply max_endpoints cap (0 = unlimited)
+            if req.max_endpoints > 0:
+                endpoints = endpoints[:req.max_endpoints]
 
             # Split OpenAPI vs scrape
             openapi_eps = [ep for ep in endpoints if ep.get("source") == "openapi" and ep.get("text")]
@@ -132,13 +151,20 @@ def run_pipeline(job_id: str, req: CrawlRequest):
 
             all_data = list(openapi_eps)
             job["endpoint_count"] = len(openapi_eps)
-            job["progress"] = "Found {} OpenAPI endpoints, scraping {} pages...".format(
-                len(openapi_eps), len(scrape_eps)
-            )
 
-            for i, ep in enumerate(scrape_eps[:req.max_endpoints], 1):
+            found_msg = f"Found {len(endpoints)} endpoints"
+            if scrape_eps:
+                found_msg += f" — scraping {len(scrape_eps)} pages for details..."
+            _on_progress(found_msg)
+            job["progress"] = found_msg
+
+            for i, ep in enumerate(scrape_eps, 1):
                 slug = ep.get("slug", "endpoint_{}".format(i))
-                job["progress"] = "Scraping page {}/{}: {}".format(i, len(scrape_eps), slug)
+                scrape_msg = "Scraping {}/{}: {}".format(i, len(scrape_eps), slug)
+                job["progress"] = scrape_msg
+                job["discovery_log"].append(scrape_msg)
+                if len(job["discovery_log"]) > 200:
+                    job["discovery_log"] = job["discovery_log"][-200:]
 
                 try:
                     data = step1.extract_page(client, ep["url"])
@@ -153,6 +179,10 @@ def run_pipeline(job_id: str, req: CrawlRequest):
                     merged["code_blocks"] = data.get("code_blocks", [])
                     merged["response_example"] = data.get("response_example", "")
                     merged["headers"] = data.get("headers", [])
+
+                    method_str = merged.get("method") or "?"
+                    path_str = merged.get("api_path") or slug
+                    job["discovery_log"][-1] = f"✓ {method_str} {path_str}"
 
                     all_data.append(merged)
                     job["endpoint_count"] = len(all_data)
@@ -258,6 +288,7 @@ async def start_crawl(req: CrawlRequest):
         "error": None,
         "collection_path": None,
         "endpoints_path": None,
+        "discovery_log": [],
     }
 
     # Run pipeline in a background thread
