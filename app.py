@@ -81,6 +81,7 @@ class JobStatus(BaseModel):
     endpoint_count: int = 0
     error: Optional[str] = None
     discovery_log: list = []
+    url: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +290,7 @@ async def start_crawl(req: CrawlRequest):
         "collection_path": None,
         "endpoints_path": None,
         "discovery_log": [],
+        "url": req.url,
     }
 
     # Run pipeline in a background thread
