@@ -599,7 +599,8 @@ def discover_sidebar_recursive(client, start_url, max_pages=50, delay=0.3, progr
 
         # Extract a short label from the URL for the progress message
         page_label = current_url.split("/")[-1] or current_url.split("/")[-2] or "root"
-        progress_msg = f"Scanning page {pages_visited}/{limit_label}: {page_label}"
+        found_count = len(all_page_urls)
+        progress_msg = f"Scanning page {pages_visited}/{limit_label}: {page_label} — {found_count} endpoints found"
         logger.info(f"  BFS [{pages_visited}/{limit_label}] scanning: {current_url}")
         if progress_callback:
             progress_callback(progress_msg)
