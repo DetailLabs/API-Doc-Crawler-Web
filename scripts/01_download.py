@@ -37,28 +37,39 @@ DEFAULT_HEADERS = {
 }
 
 
-def fetch_page_html(client, url, max_retries=3):
+def fetch_page_html(client, url, max_retries=3, progress_callback=None):
     """Fetch a URL via httpx and return the HTML string.
-    Retries with exponential backoff on 429 (rate limit) responses."""
+
+    Retries with exponential backoff on 429 (rate limit) responses.
+    When ``progress_callback`` is provided, rate-limit waits and fetch
+    failures are reported through it so the UI log can surface them.
+    """
+    def _notify(msg):
+        logger.warning(msg)
+        if progress_callback:
+            try:
+                progress_callback(msg)
+            except Exception:
+                pass
+
+    short = url.split("?", 1)[0]
     for attempt in range(max_retries):
         try:
             resp = client.get(url, follow_redirects=True)
             if resp.status_code == 200:
                 return resp.text
             if resp.status_code == 429:
-                # Rate limited — wait and retry
                 retry_after = int(resp.headers.get("Retry-After", 2 ** (attempt + 1)))
                 wait = min(retry_after, 30)
-                logger.warning(f"Rate limited (429) on {url} — retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
+                _notify(f"⏳ Rate limited (429) on {short} — waiting {wait}s (try {attempt + 1}/{max_retries})")
                 time.sleep(wait)
                 continue
-            # Other non-200 status
-            logger.warning(f"HTTP {resp.status_code} for {url}")
+            _notify(f"⚠ HTTP {resp.status_code} on {short}")
             return ""
         except Exception as e:
-            logger.warning(f"Failed to fetch {url}: {e}")
+            _notify(f"⚠ Fetch failed on {short}: {e}")
             return ""
-    logger.warning(f"Gave up on {url} after {max_retries} retries (rate limited)")
+    _notify(f"✗ Gave up on {short} after {max_retries} retries (rate limited)")
     return ""
 
 
@@ -626,22 +637,30 @@ def discover_sidebar_recursive(client, start_url, max_pages=50, delay=0.3, progr
 
         # Fetch this level in parallel
         with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
-            futures = {pool.submit(fetch_page_html, client, u): u for u in batch}
+            futures = {
+                pool.submit(fetch_page_html, client, u, 3, progress_callback): u
+                for u in batch
+            }
             results = []
             for fut in as_completed(futures):
                 url = futures[fut]
                 try:
                     html = fut.result()
                 except Exception as e:
-                    logger.warning(f"BFS fetch error for {url}: {e}")
+                    msg = f"⚠ BFS fetch error for {url}: {e}"
+                    logger.warning(msg)
+                    if progress_callback:
+                        progress_callback(msg)
                     html = ""
                 results.append((url, html))
 
         pages_visited += len(batch)
 
+        empty_count = 0
         next_level = []
         for url, html in results:
             if not html:
+                empty_count += 1
                 continue
             found_urls = _extract_nav_links(html, start_url)
             for u in found_urls:
@@ -649,6 +668,12 @@ def discover_sidebar_recursive(client, start_url, max_pages=50, delay=0.3, progr
                     visited.add(u)
                     next_level.append(u)
                 all_page_urls.add(u)
+
+        if empty_count and progress_callback:
+            progress_callback(
+                f"⚠ {empty_count}/{len(batch)} pages returned empty this level "
+                "(rate limit, redirect, or JS-only content)"
+            )
 
         # Add any carry-over from the previous current_level (if batch was capped)
         current_level = current_level + next_level
@@ -697,7 +722,7 @@ def _visible_text(el):
     return str(el).strip()
 
 
-def extract_page(client, url):
+def extract_page(client, url, progress_callback=None):
     """Fetch a URL and extract endpoint data using BeautifulSoup."""
     result = {
         "title": "", "text": "", "description_body": "", "permissions": "",
@@ -705,7 +730,7 @@ def extract_page(client, url):
         "code_blocks": [], "response_example": "", "headers": [],
     }
 
-    html = fetch_page_html(client, url)
+    html = fetch_page_html(client, url, progress_callback=progress_callback)
     if not html:
         return result
 

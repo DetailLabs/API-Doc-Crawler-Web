@@ -74,7 +74,7 @@ class CrawlRequest(BaseModel):
     max_endpoints: int = 0  # 0 = unlimited
     max_pages: int = 0      # 0 = unlimited
     delay: float = 0.0      # no artificial throttle
-    concurrency: int = 32   # parallel scrape workers (max)
+    concurrency: int = 5    # parallel scrape workers (conservative default)
 
 
 class JobStatus(BaseModel):
@@ -164,14 +164,20 @@ def run_pipeline(job_id: str, req: CrawlRequest):
 
             # Parallel scraping: httpx.Client is thread-safe for sync operations.
             # Empty/0 means "max capacity".
-            workers = int(req.concurrency) if req.concurrency and req.concurrency > 0 else 32
+            workers = int(req.concurrency) if req.concurrency and req.concurrency > 0 else 5
             log_lock = Lock()
             completed = [0]
+
+            def _progress_from_thread(msg):
+                with log_lock:
+                    job["discovery_log"].append(msg)
+                    if len(job["discovery_log"]) > 200:
+                        job["discovery_log"] = job["discovery_log"][-200:]
 
             def _scrape_one(ep):
                 slug = ep.get("slug", "endpoint")
                 try:
-                    data = step1.extract_page(client, ep["url"])
+                    data = step1.extract_page(client, ep["url"], progress_callback=_progress_from_thread)
                     merged = {**ep}
                     for key in ("title", "method", "api_path"):
                         if data.get(key):
