@@ -598,7 +598,7 @@ def _extract_nav_links(html, start_url):
     return urls
 
 
-def discover_sidebar_recursive(client, start_url, max_pages=50, delay=0.3, progress_callback=None, concurrency=8):
+def discover_sidebar_recursive(client, start_url, max_pages=50, delay=0.3, progress_callback=None, concurrency=5):
     """Recursively discover endpoint pages via BFS link following.
 
     Follows links under the start URL's path prefix to discover sub-pages.
