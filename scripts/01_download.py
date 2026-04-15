@@ -20,6 +20,7 @@ import re
 import logging
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, urljoin
 
 import httpx
@@ -576,49 +577,73 @@ def _extract_nav_links(html, start_url):
     return urls
 
 
-def discover_sidebar_recursive(client, start_url, max_pages=50, delay=0.3, progress_callback=None):
+def discover_sidebar_recursive(client, start_url, max_pages=50, delay=0.3, progress_callback=None, concurrency=8):
     """Recursively discover endpoint pages via BFS link following.
 
     Follows links under the start URL's path prefix to discover sub-pages.
+    Pages within each BFS level are fetched in parallel for speed.
 
     Returns a list of endpoint dicts (same format as discover_sidebar).
     """
     start_url_clean = start_url.rstrip("/")
-    visited = set()
-    queue = deque([start_url_clean])
-    visited.add(start_url_clean)
+    visited = {start_url_clean}
+    current_level = [start_url_clean]
     all_page_urls = set()
 
     limit_label = str(max_pages) if max_pages > 0 else "∞"
-    logger.info(f"Starting recursive discovery from {start_url_clean} (max {limit_label} pages)")
+    logger.info(
+        f"Starting recursive discovery from {start_url_clean} "
+        f"(max {limit_label} pages, x{concurrency} parallel)"
+    )
 
     pages_visited = 0
-    while queue and (max_pages <= 0 or pages_visited < max_pages):
-        current_url = queue.popleft()
-        pages_visited += 1
+    while current_level and (max_pages <= 0 or pages_visited < max_pages):
+        # Cap this batch so we don't exceed max_pages
+        if max_pages > 0:
+            remaining = max_pages - pages_visited
+            batch = current_level[:remaining]
+        else:
+            batch = current_level
+        current_level = current_level[len(batch):]
 
-        # Extract a short label from the URL for the progress message
-        page_label = current_url.split("/")[-1] or current_url.split("/")[-2] or "root"
         found_count = len(all_page_urls)
-        progress_msg = f"Scanning page {pages_visited}/{limit_label}: {page_label} — {found_count} endpoints found"
-        logger.info(f"  BFS [{pages_visited}/{limit_label}] scanning: {current_url}")
+        progress_msg = (
+            f"Scanning {len(batch)} pages in parallel "
+            f"({pages_visited + len(batch)}/{limit_label}) — {found_count} endpoints found"
+        )
         if progress_callback:
             progress_callback(progress_msg)
 
-        html = fetch_page_html(client, current_url)
-        if not html:
-            continue
+        # Fetch this level in parallel
+        with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+            futures = {pool.submit(fetch_page_html, client, u): u for u in batch}
+            results = []
+            for fut in as_completed(futures):
+                url = futures[fut]
+                try:
+                    html = fut.result()
+                except Exception as e:
+                    logger.warning(f"BFS fetch error for {url}: {e}")
+                    html = ""
+                results.append((url, html))
 
-        # Extract links from this page
-        found_urls = _extract_nav_links(html, start_url)
+        pages_visited += len(batch)
 
-        for url in found_urls:
-            if url not in visited:
-                visited.add(url)
-                queue.append(url)
-            all_page_urls.add(url)
+        next_level = []
+        for url, html in results:
+            if not html:
+                continue
+            found_urls = _extract_nav_links(html, start_url)
+            for u in found_urls:
+                if u not in visited:
+                    visited.add(u)
+                    next_level.append(u)
+                all_page_urls.add(u)
 
-        if pages_visited < max_pages and queue:
+        # Add any carry-over from the previous current_level (if batch was capped)
+        current_level = current_level + next_level
+
+        if delay and current_level and (max_pages <= 0 or pages_visited < max_pages):
             time.sleep(delay)
 
     # Remove the start URL itself and any obvious category/index pages

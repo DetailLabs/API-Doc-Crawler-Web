@@ -287,6 +287,16 @@
             background: #16a34a;
         }
 
+        .download-btn.secondary {
+            background: #334155;
+            color: #e2e8f0;
+            margin-left: 8px;
+        }
+
+        .download-btn.secondary:hover {
+            background: #475569;
+        }
+
         .endpoint-preview {
             margin-top: 20px;
             max-height: 400px;
@@ -525,6 +535,12 @@
                     </svg>
                     Download Postman Collection
                 </a>
+                <a class="download-btn secondary" id="download-raw-btn" href="#">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <path d="M8 1v10M8 11L4 7M8 11l4-4M2 14h12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    Download Raw JSON
+                </a>
                 <div class="endpoint-preview" id="endpoint-preview"></div>
                 <button class="new-crawl-btn" onclick="resetForm()">Crawl another API</button>
             </div>
@@ -644,6 +660,7 @@
             document.getElementById('result-section').classList.remove('hidden');
             document.getElementById('result-badge').textContent = job.endpoint_count + ' endpoints';
             document.getElementById('download-btn').href = `/api/jobs/${currentJobId}/download`;
+            document.getElementById('download-raw-btn').href = `/api/jobs/${currentJobId}/download/raw`;
 
 
             // Load endpoint preview
