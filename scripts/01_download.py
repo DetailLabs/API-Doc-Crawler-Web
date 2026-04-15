@@ -150,42 +150,37 @@ def discover_endpoints(client, start_url, progress_callback=None, max_endpoints=
     _progress("Checking for OpenAPI spec...")
     all_eps = []
 
-    # Strategy 1: OpenAPI spec
+    # Strategy 1: OpenAPI spec (supplements live crawl — never replaces it)
     openapi = try_openapi(client, start_url)
     if openapi:
         _progress(f"Found {len(openapi)} endpoints via OpenAPI spec")
         all_eps.extend(openapi)
 
-    # If OpenAPI found 3+ complete endpoints, skip noisy strategies
-    if len(openapi) >= 3 and all(ep.get("api_path") and ep.get("method") for ep in openapi):
-        _progress("OpenAPI spec is complete — skipping sidebar scan")
+    # Strategy 2: Always live-crawl the pasted URL — sidebar + recursive BFS.
+    # We do this even when OpenAPI has results so the user sees live progress
+    # and we pick up any doc pages that the spec misses.
+    _progress("Checking for ReadMe.io sidebar...")
+    readme_eps = discover_readme_sidebar(client, start_url)
+    if readme_eps:
+        _progress(f"Found {len(readme_eps)} pages via ReadMe sidebar API")
+        all_eps.extend(readme_eps)
     else:
-        # Try ReadMe.io sidebar API first (JS-rendered sidebars)
-        _progress("Checking for ReadMe.io sidebar...")
-        readme_eps = discover_readme_sidebar(client, start_url)
-        if readme_eps:
-            _progress(f"Found {len(readme_eps)} pages via ReadMe sidebar API")
-            all_eps.extend(readme_eps)
-        else:
-            # Try static sidebar first
-            _progress("Scanning sidebar navigation...")
-            sidebar = discover_sidebar(client, start_url)
-            if sidebar:
-                _progress(f"Found {len(sidebar)} links via static sidebar")
+        _progress("Scanning sidebar navigation...")
+        sidebar = discover_sidebar(client, start_url)
+        if sidebar:
+            _progress(f"Found {len(sidebar)} links via static sidebar")
 
-            # Always try recursive discovery to find deeper endpoint pages
-            # Static sidebar often finds only top-level category pages
-            _progress("Scanning sub-pages for more endpoints...")
-            recursive = discover_sidebar_recursive(
-                client, start_url, max_pages=max_pages, delay=0.5,
-                progress_callback=progress_callback,
-            )
-            if recursive and len(recursive) > len(sidebar):
-                _progress(f"Recursive scan found {len(recursive)} pages (vs {len(sidebar)} from sidebar)")
-                all_eps.extend(recursive)
-            elif sidebar:
-                _progress(f"Using {len(sidebar)} sidebar links")
-                all_eps.extend(sidebar)
+        _progress("Scanning sub-pages for more endpoints...")
+        recursive = discover_sidebar_recursive(
+            client, start_url, max_pages=max_pages, delay=0.5,
+            progress_callback=progress_callback,
+        )
+        if recursive and len(recursive) > len(sidebar):
+            _progress(f"Recursive scan found {len(recursive)} pages (vs {len(sidebar)} from sidebar)")
+            all_eps.extend(recursive)
+        elif sidebar:
+            _progress(f"Using {len(sidebar)} sidebar links")
+            all_eps.extend(sidebar)
 
     # Deduplicate
     seen = set()
