@@ -220,10 +220,25 @@ def discover_endpoints(client, start_url, progress_callback=None, max_endpoints=
     return unique
 
 
+KNOWN_OPENAPI_SPECS = {
+    # Sites whose OpenAPI spec isn't hosted on the docs domain itself.
+    "docs.github.com": [
+        "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
+    ],
+    "github.com": [
+        "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
+    ],
+}
+
+
 def try_openapi(client, start_url):
     """Try to find and parse an OpenAPI/Swagger spec."""
     base = urlparse(start_url)
-    candidates = [
+    candidates = []
+    # Known-host shortcut first (e.g. GitHub's spec lives on GitHub itself)
+    host_specs = KNOWN_OPENAPI_SPECS.get((base.netloc or "").lower(), [])
+    candidates.extend(host_specs)
+    candidates.extend([
         "{}://{}/openapi.json".format(base.scheme, base.netloc),
         "{}://{}/swagger.json".format(base.scheme, base.netloc),
         "{}://{}/v2/swagger.json".format(base.scheme, base.netloc),
@@ -231,7 +246,7 @@ def try_openapi(client, start_url):
         "{}://{}/api/openapi.json".format(base.scheme, base.netloc),
         "{}://{}/v3/api-docs".format(base.scheme, base.netloc),
         "{}://{}/api-docs".format(base.scheme, base.netloc),
-    ]
+    ])
 
     # Check page for spec links
     page_html = fetch_page_html(client, start_url)
