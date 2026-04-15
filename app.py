@@ -73,8 +73,8 @@ class CrawlRequest(BaseModel):
     collection_name: Optional[str] = None
     max_endpoints: int = 0  # 0 = unlimited
     max_pages: int = 0      # 0 = unlimited
-    delay: float = 0.5
-    concurrency: int = 8    # parallel scrape workers
+    delay: float = 0.0      # no artificial throttle
+    concurrency: int = 32   # parallel scrape workers (max)
 
 
 class JobStatus(BaseModel):
