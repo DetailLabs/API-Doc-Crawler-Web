@@ -16,8 +16,10 @@ import os
 import re
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from pathlib import Path
+from threading import Lock
 from typing import Dict, Optional
 
 import httpx
@@ -71,7 +73,8 @@ class CrawlRequest(BaseModel):
     collection_name: Optional[str] = None
     max_endpoints: int = 0  # 0 = unlimited
     max_pages: int = 0      # 0 = unlimited
-    delay: float = 0.5
+    delay: float = 0.0      # no artificial throttle
+    concurrency: int = 5    # parallel scrape workers (conservative default)
 
 
 class JobStatus(BaseModel):
@@ -159,16 +162,23 @@ def run_pipeline(job_id: str, req: CrawlRequest):
             _on_progress(found_msg)
             job["progress"] = found_msg
 
-            for i, ep in enumerate(scrape_eps, 1):
-                slug = ep.get("slug", "endpoint_{}".format(i))
-                scrape_msg = "Scraping {}/{}: {}".format(i, len(scrape_eps), slug)
-                job["progress"] = scrape_msg
-                job["discovery_log"].append(scrape_msg)
-                if len(job["discovery_log"]) > 200:
-                    job["discovery_log"] = job["discovery_log"][-200:]
+            # Parallel scraping: httpx.Client is thread-safe for sync operations.
+            # Hard cap at 5 to stay polite to third-party doc sites.
+            requested = int(req.concurrency) if req.concurrency and req.concurrency > 0 else 5
+            workers = max(1, min(5, requested))
+            log_lock = Lock()
+            completed = [0]
 
+            def _progress_from_thread(msg):
+                with log_lock:
+                    job["discovery_log"].append(msg)
+                    if len(job["discovery_log"]) > 200:
+                        job["discovery_log"] = job["discovery_log"][-200:]
+
+            def _scrape_one(ep):
+                slug = ep.get("slug", "endpoint")
                 try:
-                    data = step1.extract_page(client, ep["url"])
+                    data = step1.extract_page(client, ep["url"], progress_callback=_progress_from_thread)
                     merged = {**ep}
                     for key in ("title", "method", "api_path"):
                         if data.get(key):
@@ -180,17 +190,32 @@ def run_pipeline(job_id: str, req: CrawlRequest):
                     merged["code_blocks"] = data.get("code_blocks", [])
                     merged["response_example"] = data.get("response_example", "")
                     merged["headers"] = data.get("headers", [])
-
-                    method_str = merged.get("method") or "?"
-                    path_str = merged.get("api_path") or slug
-                    job["discovery_log"][-1] = f"✓ {method_str} {path_str}"
-
-                    all_data.append(merged)
-                    job["endpoint_count"] = len(all_data)
+                    return merged
                 except Exception as e:
                     logger.error(f"Error scraping {slug}: {e}")
+                    return None
 
-                time.sleep(req.delay)
+            if scrape_eps:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = {pool.submit(_scrape_one, ep): ep for ep in scrape_eps}
+                    for fut in as_completed(futures):
+                        ep = futures[fut]
+                        merged = fut.result()
+                        with log_lock:
+                            completed[0] += 1
+                            done = completed[0]
+                            if merged:
+                                method_str = merged.get("method") or "?"
+                                path_str = merged.get("api_path") or merged.get("slug", "")
+                                line = f"✓ [{done}/{len(scrape_eps)}] {method_str} {path_str}"
+                                all_data.append(merged)
+                                job["endpoint_count"] = len(all_data)
+                            else:
+                                line = f"✗ [{done}/{len(scrape_eps)}] {ep.get('slug', '')}"
+                            job["progress"] = f"Scraping {done}/{len(scrape_eps)} (x{workers} parallel)"
+                            job["discovery_log"].append(line)
+                            if len(job["discovery_log"]) > 200:
+                                job["discovery_log"] = job["discovery_log"][-200:]
 
         # Save individual endpoint files
         endpoints_dir = os.path.join(output_dir, "endpoints")
@@ -330,6 +355,21 @@ async def download_collection(job_id: str):
         job["collection_path"],
         media_type="application/json",
         filename="postman_collection.json",
+    )
+
+
+@app.get("/api/jobs/{job_id}/download/raw")
+async def download_raw(job_id: str):
+    """Download the raw categorized endpoints JSON (no Postman wrapping)."""
+    if job_id not in jobs:
+        raise HTTPException(404, "Job not found")
+    job = jobs[job_id]
+    if job["status"] != "completed" or not job.get("endpoints_path"):
+        raise HTTPException(404, "Raw JSON not ready yet")
+    return FileResponse(
+        job["endpoints_path"],
+        media_type="application/json",
+        filename="endpoints.json",
     )
 
 

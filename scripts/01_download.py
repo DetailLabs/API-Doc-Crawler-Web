@@ -20,6 +20,7 @@ import re
 import logging
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, urljoin
 
 import httpx
@@ -36,28 +37,39 @@ DEFAULT_HEADERS = {
 }
 
 
-def fetch_page_html(client, url, max_retries=3):
+def fetch_page_html(client, url, max_retries=3, progress_callback=None):
     """Fetch a URL via httpx and return the HTML string.
-    Retries with exponential backoff on 429 (rate limit) responses."""
+
+    Retries with exponential backoff on 429 (rate limit) responses.
+    When ``progress_callback`` is provided, rate-limit waits and fetch
+    failures are reported through it so the UI log can surface them.
+    """
+    def _notify(msg):
+        logger.warning(msg)
+        if progress_callback:
+            try:
+                progress_callback(msg)
+            except Exception:
+                pass
+
+    short = url.split("?", 1)[0]
     for attempt in range(max_retries):
         try:
             resp = client.get(url, follow_redirects=True)
             if resp.status_code == 200:
                 return resp.text
             if resp.status_code == 429:
-                # Rate limited — wait and retry
                 retry_after = int(resp.headers.get("Retry-After", 2 ** (attempt + 1)))
                 wait = min(retry_after, 30)
-                logger.warning(f"Rate limited (429) on {url} — retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
+                _notify(f"⏳ Rate limited (429) on {short} — waiting {wait}s (try {attempt + 1}/{max_retries})")
                 time.sleep(wait)
                 continue
-            # Other non-200 status
-            logger.warning(f"HTTP {resp.status_code} for {url}")
+            _notify(f"⚠ HTTP {resp.status_code} on {short}")
             return ""
         except Exception as e:
-            logger.warning(f"Failed to fetch {url}: {e}")
+            _notify(f"⚠ Fetch failed on {short}: {e}")
             return ""
-    logger.warning(f"Gave up on {url} after {max_retries} retries (rate limited)")
+    _notify(f"✗ Gave up on {short} after {max_retries} retries (rate limited)")
     return ""
 
 
@@ -149,42 +161,37 @@ def discover_endpoints(client, start_url, progress_callback=None, max_endpoints=
     _progress("Checking for OpenAPI spec...")
     all_eps = []
 
-    # Strategy 1: OpenAPI spec
+    # Strategy 1: OpenAPI spec (supplements live crawl — never replaces it)
     openapi = try_openapi(client, start_url)
     if openapi:
         _progress(f"Found {len(openapi)} endpoints via OpenAPI spec")
         all_eps.extend(openapi)
 
-    # If OpenAPI found 3+ complete endpoints, skip noisy strategies
-    if len(openapi) >= 3 and all(ep.get("api_path") and ep.get("method") for ep in openapi):
-        _progress("OpenAPI spec is complete — skipping sidebar scan")
+    # Strategy 2: Always live-crawl the pasted URL — sidebar + recursive BFS.
+    # We do this even when OpenAPI has results so the user sees live progress
+    # and we pick up any doc pages that the spec misses.
+    _progress("Checking for ReadMe.io sidebar...")
+    readme_eps = discover_readme_sidebar(client, start_url)
+    if readme_eps:
+        _progress(f"Found {len(readme_eps)} pages via ReadMe sidebar API")
+        all_eps.extend(readme_eps)
     else:
-        # Try ReadMe.io sidebar API first (JS-rendered sidebars)
-        _progress("Checking for ReadMe.io sidebar...")
-        readme_eps = discover_readme_sidebar(client, start_url)
-        if readme_eps:
-            _progress(f"Found {len(readme_eps)} pages via ReadMe sidebar API")
-            all_eps.extend(readme_eps)
-        else:
-            # Try static sidebar first
-            _progress("Scanning sidebar navigation...")
-            sidebar = discover_sidebar(client, start_url)
-            if sidebar:
-                _progress(f"Found {len(sidebar)} links via static sidebar")
+        _progress("Scanning sidebar navigation...")
+        sidebar = discover_sidebar(client, start_url)
+        if sidebar:
+            _progress(f"Found {len(sidebar)} links via static sidebar")
 
-            # Always try recursive discovery to find deeper endpoint pages
-            # Static sidebar often finds only top-level category pages
-            _progress("Scanning sub-pages for more endpoints...")
-            recursive = discover_sidebar_recursive(
-                client, start_url, max_pages=max_pages, delay=0.5,
-                progress_callback=progress_callback,
-            )
-            if recursive and len(recursive) > len(sidebar):
-                _progress(f"Recursive scan found {len(recursive)} pages (vs {len(sidebar)} from sidebar)")
-                all_eps.extend(recursive)
-            elif sidebar:
-                _progress(f"Using {len(sidebar)} sidebar links")
-                all_eps.extend(sidebar)
+        _progress("Scanning sub-pages for more endpoints...")
+        recursive = discover_sidebar_recursive(
+            client, start_url, max_pages=max_pages, delay=0.5,
+            progress_callback=progress_callback,
+        )
+        if recursive and len(recursive) > len(sidebar):
+            _progress(f"Recursive scan found {len(recursive)} pages (vs {len(sidebar)} from sidebar)")
+            all_eps.extend(recursive)
+        elif sidebar:
+            _progress(f"Using {len(sidebar)} sidebar links")
+            all_eps.extend(sidebar)
 
     # Deduplicate
     seen = set()
@@ -219,10 +226,25 @@ def discover_endpoints(client, start_url, progress_callback=None, max_endpoints=
     return unique
 
 
+KNOWN_OPENAPI_SPECS = {
+    # Sites whose OpenAPI spec isn't hosted on the docs domain itself.
+    "docs.github.com": [
+        "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
+    ],
+    "github.com": [
+        "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
+    ],
+}
+
+
 def try_openapi(client, start_url):
     """Try to find and parse an OpenAPI/Swagger spec."""
     base = urlparse(start_url)
-    candidates = [
+    candidates = []
+    # Known-host shortcut first (e.g. GitHub's spec lives on GitHub itself)
+    host_specs = KNOWN_OPENAPI_SPECS.get((base.netloc or "").lower(), [])
+    candidates.extend(host_specs)
+    candidates.extend([
         "{}://{}/openapi.json".format(base.scheme, base.netloc),
         "{}://{}/swagger.json".format(base.scheme, base.netloc),
         "{}://{}/v2/swagger.json".format(base.scheme, base.netloc),
@@ -230,7 +252,7 @@ def try_openapi(client, start_url):
         "{}://{}/api/openapi.json".format(base.scheme, base.netloc),
         "{}://{}/v3/api-docs".format(base.scheme, base.netloc),
         "{}://{}/api-docs".format(base.scheme, base.netloc),
-    ]
+    ])
 
     # Check page for spec links
     page_html = fetch_page_html(client, start_url)
@@ -576,49 +598,87 @@ def _extract_nav_links(html, start_url):
     return urls
 
 
-def discover_sidebar_recursive(client, start_url, max_pages=50, delay=0.3, progress_callback=None):
+def discover_sidebar_recursive(client, start_url, max_pages=50, delay=0.3, progress_callback=None, concurrency=5):
     """Recursively discover endpoint pages via BFS link following.
 
     Follows links under the start URL's path prefix to discover sub-pages.
+    Pages within each BFS level are fetched in parallel for speed.
 
     Returns a list of endpoint dicts (same format as discover_sidebar).
     """
     start_url_clean = start_url.rstrip("/")
-    visited = set()
-    queue = deque([start_url_clean])
-    visited.add(start_url_clean)
+    visited = {start_url_clean}
+    current_level = [start_url_clean]
     all_page_urls = set()
 
     limit_label = str(max_pages) if max_pages > 0 else "∞"
-    logger.info(f"Starting recursive discovery from {start_url_clean} (max {limit_label} pages)")
+    logger.info(
+        f"Starting recursive discovery from {start_url_clean} "
+        f"(max {limit_label} pages, x{concurrency} parallel)"
+    )
 
     pages_visited = 0
-    while queue and (max_pages <= 0 or pages_visited < max_pages):
-        current_url = queue.popleft()
-        pages_visited += 1
+    while current_level and (max_pages <= 0 or pages_visited < max_pages):
+        # Cap this batch so we don't exceed max_pages
+        if max_pages > 0:
+            remaining = max_pages - pages_visited
+            batch = current_level[:remaining]
+        else:
+            batch = current_level
+        current_level = current_level[len(batch):]
 
-        # Extract a short label from the URL for the progress message
-        page_label = current_url.split("/")[-1] or current_url.split("/")[-2] or "root"
         found_count = len(all_page_urls)
-        progress_msg = f"Scanning page {pages_visited}/{limit_label}: {page_label} — {found_count} endpoints found"
-        logger.info(f"  BFS [{pages_visited}/{limit_label}] scanning: {current_url}")
+        progress_msg = (
+            f"Scanning {len(batch)} pages in parallel "
+            f"({pages_visited + len(batch)}/{limit_label}) — {found_count} endpoints found"
+        )
         if progress_callback:
             progress_callback(progress_msg)
 
-        html = fetch_page_html(client, current_url)
-        if not html:
-            continue
+        # Fetch this level in parallel
+        with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+            futures = {
+                pool.submit(fetch_page_html, client, u, 3, progress_callback): u
+                for u in batch
+            }
+            results = []
+            for fut in as_completed(futures):
+                url = futures[fut]
+                try:
+                    html = fut.result()
+                except Exception as e:
+                    msg = f"⚠ BFS fetch error for {url}: {e}"
+                    logger.warning(msg)
+                    if progress_callback:
+                        progress_callback(msg)
+                    html = ""
+                results.append((url, html))
 
-        # Extract links from this page
-        found_urls = _extract_nav_links(html, start_url)
+        pages_visited += len(batch)
 
-        for url in found_urls:
-            if url not in visited:
-                visited.add(url)
-                queue.append(url)
-            all_page_urls.add(url)
+        empty_count = 0
+        next_level = []
+        for url, html in results:
+            if not html:
+                empty_count += 1
+                continue
+            found_urls = _extract_nav_links(html, start_url)
+            for u in found_urls:
+                if u not in visited:
+                    visited.add(u)
+                    next_level.append(u)
+                all_page_urls.add(u)
 
-        if pages_visited < max_pages and queue:
+        if empty_count and progress_callback:
+            progress_callback(
+                f"⚠ {empty_count}/{len(batch)} pages returned empty this level "
+                "(rate limit, redirect, or JS-only content)"
+            )
+
+        # Add any carry-over from the previous current_level (if batch was capped)
+        current_level = current_level + next_level
+
+        if delay and current_level and (max_pages <= 0 or pages_visited < max_pages):
             time.sleep(delay)
 
     # Remove the start URL itself and any obvious category/index pages
@@ -662,7 +722,7 @@ def _visible_text(el):
     return str(el).strip()
 
 
-def extract_page(client, url):
+def extract_page(client, url, progress_callback=None):
     """Fetch a URL and extract endpoint data using BeautifulSoup."""
     result = {
         "title": "", "text": "", "description_body": "", "permissions": "",
@@ -670,7 +730,7 @@ def extract_page(client, url):
         "code_blocks": [], "response_example": "", "headers": [],
     }
 
-    html = fetch_page_html(client, url)
+    html = fetch_page_html(client, url, progress_callback=progress_callback)
     if not html:
         return result
 
