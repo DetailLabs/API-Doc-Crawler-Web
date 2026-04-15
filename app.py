@@ -163,7 +163,8 @@ def run_pipeline(job_id: str, req: CrawlRequest):
             job["progress"] = found_msg
 
             # Parallel scraping: httpx.Client is thread-safe for sync operations.
-            workers = max(1, int(req.concurrency or 1))
+            # Empty/0 means "max capacity".
+            workers = int(req.concurrency) if req.concurrency and req.concurrency > 0 else 32
             log_lock = Lock()
             completed = [0]
 
